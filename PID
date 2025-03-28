@@ -1,0 +1,152 @@
+#include <Arduino.h>
+#include <Servo.h>  // 控制舵机的库 Servo library for controlling servos
+#include <Wire.h>   // I2C通信库 I2C communication library
+
+// 创建两个舵机对象 Servo objects for X-axis and Y-axis motors
+Servo motorX, motorY;
+
+////////////////////////////////////////////
+// I2C 通信设置 Raspberry Pi to Arduino I2C connection
+#define I2C_ADDR 0x08       // Arduino I2C 地址 Arduino I2C address
+#define DATA_SIZE 5         // 接收数据大小 Expected size of data buffer
+
+// X 轴舵机角度限制 Servo angle bounds for X-axis
+#define BASE_ANGLE_X 43
+#define MIN_ANGLE_X (BASE_ANGLE_X - 5)
+#define MAX_ANGLE_X (BASE_ANGLE_X + 5)
+
+// Y 轴舵机角度限制 Servo angle bounds for Y-axis
+#define BASE_ANGLE_Y 50
+#define MIN_ANGLE_Y (BASE_ANGLE_Y - 5)
+#define MAX_ANGLE_Y (BASE_ANGLE_Y + 5)
+
+////////////////////////////////////////////
+// PID 控制参数 PID controller parameters
+float Kp = 3.0;  // 比例项 Proportional gain
+float Ki = 0.05; // 积分项 Integral gain
+float Kd = 0.8;  // 微分项 Derivative gain
+float prevError[2] = {0, 0};
+float integral[2] = {0, 0};
+float integralLimit = 10.0;
+int x_axis = 0, y_axis = 1;
+float prevData[2] = {0, 0};
+
+int completionStatus = 0;  // 控制循环状态 0=运行 1=停止
+
+// 数据变量 Buffers for I2C & internal logic
+int16_t currentX, currentY, desiredX, desiredY;
+int16_t receivedData[DATA_SIZE];
+int16_t current_x = 0, current_y = 0, desired_x = 0, desired_y = 0;
+
+// I2C 接收回调 Callback for receiving I2C data
+void receiveData(int byteCount) {
+  if (byteCount >= 9) {
+    uint8_t buffer[8];
+    Wire.read(); // 丢弃第一个字节（可能是标识位或无效数据）
+    for (int i = 0; i < 8 && Wire.available(); i++) {
+      buffer[i] = Wire.read();
+    }
+
+    // 组合为16位数据
+    current_x = (int16_t)((buffer[0] << 8) | buffer[1]); 
+    current_y = (int16_t)((buffer[2] << 8) | buffer[3]);
+    desired_x = (int16_t)((buffer[4] << 8) | buffer[5]);
+    desired_y = (int16_t)((buffer[6] << 8) | buffer[7]);
+  }
+}
+
+// 映射图像坐标到舵机控制值 Map image coords to control values
+void scale_reset(int x1, int y1, int x2, int y2){
+  receivedData[0] = map(x1, 0, 480, 0, 230);
+  receivedData[1] = map(y1, 0, 640, 0, 230);
+  receivedData[2] = map(x2, 0, 480, 0, 230);
+  receivedData[3] = map(y2, 0, 640, 0, 230);
+}
+
+// PID 控制函数 PID controller logic
+float PIDControl(float currentPosition, float desiredPosition, int axis) {
+  float error = desiredPosition - currentPosition;
+
+  // 如果目标变化则清除积分
+  if (receivedData[axis + 2] != prevData[axis]) {
+    integral[axis] = 0;
+    prevData[axis] = receivedData[axis + 2];
+  }
+
+  integral[axis] += error;
+  integral[axis] = constrain(integral[axis], -integralLimit, integralLimit);
+
+  float derivative = error - prevError[axis];
+  float output = (Kp * error) + (Ki * integral[axis]) + (Kd * derivative);
+  prevError[axis] = error;
+
+  return output;
+}
+
+// 控制舵机角度（带限制） Move servo with angle bounds
+void moveMotorX(Servo &motor, float angle) {
+  float adjustedAngle = BASE_ANGLE_X + angle;
+  adjustedAngle = constrain(adjustedAngle, MIN_ANGLE_X, MAX_ANGLE_X);
+  motor.write(adjustedAngle);
+}
+
+void moveMotorY(Servo &motor, float angle) {
+  float adjustedAngle = BASE_ANGLE_Y + angle;
+  adjustedAngle = constrain(adjustedAngle, MIN_ANGLE_Y, MAX_ANGLE_Y);
+  motor.write(adjustedAngle);
+}
+
+// 主控制逻辑 Main control loop
+void motorControl(float currentX, float currentY, float desiredX, float desiredY) {
+  // 启用 PID 控制
+  float tiltX = PIDControl(desiredX, currentX, x_axis);
+  float tiltY = PIDControl(currentY, desiredY, y_axis);
+
+  moveMotorX(motorX, tiltX);
+  moveMotorY(motorY, tiltY);
+
+  // 调试输出（可开启）
+  // Serial.print("PID tiltX: "); Serial.println(tiltX);
+  // Serial.print("PID tiltY: "); Serial.println(tiltY);
+}
+
+// 初始化 Setup
+void setup() {
+  motorX.attach(3);
+  motorY.attach(5);
+  motorX.write(BASE_ANGLE_X);
+  motorY.write(BASE_ANGLE_Y);
+
+  Wire.begin(I2C_ADDR);
+  Wire.onReceive(receiveData);
+  Serial.begin(115200);
+}
+
+// 主循环 Loop
+void loop() {
+  while (completionStatus == 0) {
+    Serial.print("Current: (");
+    Serial.print(current_x); Serial.print(", "); Serial.print(current_y);
+    Serial.print(") → Desired: (");
+    Serial.print(desired_x); Serial.print(", "); Serial.print(desired_y);
+    Serial.println(")");
+
+    scale_reset(current_x, current_y, desired_x, desired_y);
+
+    // 打印映射后值
+    Serial.print(receivedData[0]); Serial.print(",");
+    Serial.print(receivedData[1]); Serial.print(",");
+    Serial.print(receivedData[2]); Serial.print(",");
+    Serial.println(receivedData[3]);
+
+    // 控制执行
+    motorControl(receivedData[0], receivedData[1], receivedData[2], receivedData[3]);
+
+    delay(20);  // 控制频率
+  }
+
+  // 任务完成后舵机停止（可选）
+  // moveMotorX(motorX, 0);
+  // moveMotorY(motorY, 0);
+  // delay(10000);
+}
