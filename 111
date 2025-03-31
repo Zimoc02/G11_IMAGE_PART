@@ -241,7 +241,10 @@ while True:
 
     if tracking_roi:
         x_roi, y_roi, w_roi, h_roi = tracking_roi
-        cv2.rectangle(frame, (x_roi, y_roi), (x_roi + w_roi, y_roi + h_roi), (0, 255, 255), 2)
+        center_x = x_roi + w_roi // 2
+        center_y = y_roi + h_roi // 2
+        radius = w_roi // 2  # 或者 min(w_roi, h_roi) // 2 更保险
+        cv2.circle(frame, (center_x, center_y), radius, (0, 255, 255), 2)
 
     for idx, offset in enumerate([2, 4, 6, 8, 10]):
         if len(position_history) >= offset:
