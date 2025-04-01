@@ -153,9 +153,20 @@ while True:
                         if calculate_distance((vx, vy), (center_x, center_y)) <= erase_radius
                     }
 
+                    # 检测黑色曲线并获取二值遮罩
                     intersection_points, black_mask = detect_black_curve(roi, (x, y, w, h), mask_circle)
+
+                    # 将黑白遮罩转换为彩色三通道图像
                     colored_mask = cv2.cvtColor(black_mask, cv2.COLOR_GRAY2BGR)
-                    frame[y:y + h, x:x + w] = cv2.addWeighted(frame[y:y + h, x:x + w], 0.7, colored_mask, 0.3, 0)
+
+                    # 将彩色黑线遮罩与原 ROI 混合，形成带阴影的图层
+                    blended = cv2.addWeighted(roi, 0.7, colored_mask, 0.3, 0)
+
+                    # 只在圆形区域内替换为 blended，避免方形块出现
+                    roi_with_shadow = frame[y:y + h, x:x + w].copy()
+                    mask_3ch = cv2.merge([mask_circle]*3)
+                    np.copyto(roi_with_shadow, blended, where=mask_3ch.astype(bool))
+                    frame[y:y + h, x:x + w] = roi_with_shadow
                     detected = True
                     break
 
