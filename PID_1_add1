@@ -1,0 +1,26 @@
+float PIDControl(int axis, float current, float target, float deltaTime) {
+  float error;
+
+  // ✅ 修改：按 axis 决定误差方向
+  if (axis == 0) {
+    error = target - current;  // X轴：current > desired，error 为负 → 向下
+  } else {
+    error = current - target;  // Y轴：current > desired，error 为正 → 向上
+  }
+
+  if (abs(error - prevError[axis]) > 30) {
+    integral[axis] = 0;
+  }
+
+  integral[axis] += error * deltaTime;
+  integral[axis] = constrain(integral[axis], -integralLimit, integralLimit);
+
+  float derivative = (error - prevError[axis]) / deltaTime;
+  prevError[axis] = error;
+
+  float output = Kp * error + Ki * integral[axis] + Kd * derivative;
+  output += feedforwardGain * error;
+  output -= 1.2 * velocity[axis];
+
+  return output;
+}
