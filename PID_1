@@ -1,0 +1,164 @@
+#include <Arduino.h>
+#include <Servo.h>
+#include <Wire.h>
+
+// ========== Servo Configuration ==========
+Servo motorX, motorY;
+
+#define I2C_ADDR 0x08
+#define EXPECTED_BYTES 8  // 4 x int16_t
+
+#define BASE_ANGLE_X 43
+#define BASE_ANGLE_Y 50
+#define MIN_ANGLE_X (BASE_ANGLE_X - 8)
+#define MAX_ANGLE_X (BASE_ANGLE_X + 8)
+#define MIN_ANGLE_Y (BASE_ANGLE_Y - 6)
+#define MAX_ANGLE_Y (BASE_ANGLE_Y + 6)
+
+// ========== PID Parameters ==========
+float Kp = 2.2;
+float Ki = 0.1;
+float Kd = 0.65;
+float integralLimit = 15.0;
+float feedforwardGain = 0.3;
+
+const float VELOCITY_ALPHA = 0.2;     // 平滑因子
+const float ANGLE_LIMIT_PER_LOOP = 2.0; // 舵机限速
+
+// ========== PID State ==========
+float prevError[2] = {0, 0};
+float integral[2] = {0, 0};
+float velocity[2] = {0, 0};
+float prevPosition[2] = {0, 0};
+
+float prevAngle[2] = {BASE_ANGLE_X, BASE_ANGLE_Y};
+unsigned long lastPIDTime = 0;
+
+// ========== I2C Data ==========
+int16_t current_x = 0, current_y = 0;
+int16_t desired_x = 0, desired_y = 0;
+
+void receiveData(int byteCount) {
+  if (byteCount >= EXPECTED_BYTES) {
+    uint8_t buffer[EXPECTED_BYTES];
+    for (int i = 0; i < EXPECTED_BYTES && Wire.available(); i++) {
+      buffer[i] = Wire.read();
+    }
+
+    current_x = (int16_t)((buffer[0] << 8) | buffer[1]);
+    current_y = (int16_t)((buffer[2] << 8) | buffer[3]);
+    desired_x = (int16_t)((buffer[4] << 8) | buffer[5]);
+    desired_y = (int16_t)((buffer[6] << 8) | buffer[7]);
+  }
+}
+
+// ========== Coordinate Scaling ==========
+void scaleCoordinates() {
+  current_x = map(current_x, 0, 1280, 0, 230);
+  current_y = map(current_y, 0, 720, 0, 230);
+  desired_x = map(desired_x, 0, 1280, 0, 230);
+  desired_y = map(desired_y, 0, 720, 0, 230);
+}
+
+// ========== PID Calculation ==========
+float PIDControl(int axis, float current, float target, float deltaTime) {
+  float error = target - current;
+
+  // 判断是否有大幅变化，重置积分
+  if (abs(error - prevError[axis]) > 30) {
+    integral[axis] = 0;
+  }
+
+  integral[axis] += error * deltaTime;
+  integral[axis] = constrain(integral[axis], -integralLimit, integralLimit);
+
+  float derivative = (error - prevError[axis]) / deltaTime;
+  prevError[axis] = error;
+
+  // PID + feedforward - velocity damping
+  float output = Kp * error + Ki * integral[axis] + Kd * derivative;
+  output += feedforwardGain * error;
+  output -= 1.2 * velocity[axis];  // velocity damping
+
+  return output;
+}
+
+// ========== Servo Write with Angle Rate Limiting ==========
+void moveServoSmooth(Servo& servo, float output, int axis) {
+  float base = (axis == 0) ? BASE_ANGLE_X : BASE_ANGLE_Y;
+  float minA = (axis == 0) ? MIN_ANGLE_X : MIN_ANGLE_Y;
+  float maxA = (axis == 0) ? MAX_ANGLE_X : MAX_ANGLE_Y;
+
+  // Deadzone compensation
+  if (abs(output) < 1.5) {
+    output = (output > 0) ? 1.8 : -1.8;
+  }
+
+  float targetAngle = constrain(base + output, minA, maxA);
+  float delta = targetAngle - prevAngle[axis];
+
+  // 限制最大变化速率
+  if (abs(delta) > ANGLE_LIMIT_PER_LOOP) {
+    targetAngle = prevAngle[axis] + (delta > 0 ? ANGLE_LIMIT_PER_LOOP : -ANGLE_LIMIT_PER_LOOP);
+  }
+
+  servo.write(targetAngle);
+  prevAngle[axis] = targetAngle;
+}
+
+// ========== Main Control Loop ==========
+void updateMotors() {
+  unsigned long now = millis();
+  float deltaTime = (now - lastPIDTime) / 1000.0;
+  if (deltaTime <= 0 || deltaTime > 0.5) deltaTime = 0.02;
+  lastPIDTime = now;
+
+  scaleCoordinates();
+
+  // 平滑速度估计
+  float rawVx = (current_x - prevPosition[0]) / deltaTime;
+  float rawVy = (current_y - prevPosition[1]) / deltaTime;
+  velocity[0] = VELOCITY_ALPHA * velocity[0] + (1 - VELOCITY_ALPHA) * rawVx;
+  velocity[1] = VELOCITY_ALPHA * velocity[1] + (1 - VELOCITY_ALPHA) * rawVy;
+  prevPosition[0] = current_x;
+  prevPosition[1] = current_y;
+
+  // PID 控制
+  float tiltX = PIDControl(0, current_x, desired_x, deltaTime);
+  float tiltY = PIDControl(1, current_y, desired_y, deltaTime);
+
+  moveServoSmooth(motorX, tiltX, 0);
+  moveServoSmooth(motorY, tiltY, 1);
+
+  // Debug 输出
+  Serial.print("Current: ");
+  Serial.print(current_x); Serial.print(", "); Serial.print(current_y);
+  Serial.print(" | Desired: ");
+  Serial.print(desired_x); Serial.print(", "); Serial.print(desired_y);
+  Serial.print(" | Tilt: ");
+  Serial.print(tiltX); Serial.print(", "); Serial.println(tiltY);
+}
+
+// ========== Setup ==========
+void setup() {
+  Serial.begin(115200);
+  motorX.attach(3);
+  motorY.attach(5);
+  motorX.write(BASE_ANGLE_X);
+  motorY.write(BASE_ANGLE_Y);
+
+  Wire.begin(I2C_ADDR);
+  Wire.onReceive(receiveData);
+
+  lastPIDTime = millis();
+  Serial.println("System Ready");
+}
+
+// ========== Main Loop ==========
+void loop() {
+  static unsigned long lastUpdate = 0;
+  if (millis() - lastUpdate >= 20) {  // 50Hz 更新
+    updateMotors();
+    lastUpdate = millis();
+  }
+}
