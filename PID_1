@@ -161,4 +161,45 @@ void loop() {
     updateMotors();
     lastUpdate = millis();
   }
+  handleSerialInput();  // 串口命令处理
+}
+
+String inputCommand = "";
+
+void processSerialCommand(String cmd) {
+  cmd.trim();
+  if (cmd.startsWith("kp=")) {
+    Kp = cmd.substring(3).toFloat();
+    Serial.print("Updated Kp: "); Serial.println(Kp);
+  } else if (cmd.startsWith("ki=")) {
+    Ki = cmd.substring(3).toFloat();
+    Serial.print("Updated Ki: "); Serial.println(Ki);
+  } else if (cmd.startsWith("kd=")) {
+    Kd = cmd.substring(3).toFloat();
+    Serial.print("Updated Kd: "); Serial.println(Kd);
+  } else if (cmd.startsWith("ff=")) {
+    feedforwardGain = cmd.substring(3).toFloat();
+    Serial.print("Updated Feedforward Gain: "); Serial.println(feedforwardGain);
+  } else if (cmd == "print") {
+    Serial.print("Kp: "); Serial.print(Kp);
+    Serial.print(" | Ki: "); Serial.print(Ki);
+    Serial.print(" | Kd: "); Serial.print(Kd);
+    Serial.print(" | FF: "); Serial.println(feedforwardGain);
+  } else {
+    Serial.println("Unknown command.");
+  }
+}
+
+void handleSerialInput() {
+  while (Serial.available()) {
+    char ch = Serial.read();
+    if (ch == '\n' || ch == '\r') {
+      if (inputCommand.length() > 0) {
+        processSerialCommand(inputCommand);
+        inputCommand = "";
+      }
+    } else {
+      inputCommand += ch;
+    }
+  }
 }
