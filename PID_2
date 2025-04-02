@@ -54,10 +54,10 @@ void receiveData(int byteCount) {
 
 // ========== Coordinate Scaling ==========
 void scaleCoordinates() {
-  current_x = map(current_x, 0, 1280, 0, 230);
-  current_y = map(current_y, 0, 720, 0, 230);
-  desired_x = map(desired_x, 0, 1280, 0, 230);
-  desired_y = map(desired_y, 0, 720, 0, 230);
+  current_x = map(current_x, 0, 1280, 230, 0);
+  current_y = map(current_y, 0, 720, 230, 0);
+  desired_x = map(desired_x, 0, 1280, 230, 0);
+  desired_y = map(desired_y, 0, 720, 230, 0);
 }
 
 // ========== PID Calculation ==========
