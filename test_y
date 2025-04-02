@@ -1,0 +1,20 @@
+#include <Servo.h>
+
+Servo motorY;
+
+void setup() {
+  Serial.begin(115200);
+  motorY.attach(3);  // 请确认舵机信号线插在 D3 引脚
+
+  Serial.println("🚀 舵机自检开始：将在 44° 和 56° 之间往复移动");
+}
+
+void loop() {
+  Serial.println("🔁 写入角度：44");
+  motorY.write(44);  // 舵机最小角度（向下）
+  delay(1500);
+
+  Serial.println("🔁 写入角度：56");
+  motorY.write(56);  // 舵机最大角度（向上）
+  delay(1500);
+}
