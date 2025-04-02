@@ -142,6 +142,20 @@ void updateMotors() {
   Serial.print(desired_x); Serial.print(", "); Serial.print(desired_y);
   Serial.print(" | Tilt: ");
   Serial.print(tiltX); Serial.print(", "); Serial.println(tiltY);
+
+  // ===== Y轴调试信息 =====
+  float baseY = BASE_ANGLE_Y;
+  float outputY = tiltY;
+  float targetAngleY = constrain(baseY + outputY, MIN_ANGLE_Y, MAX_ANGLE_Y);
+  float deltaY = targetAngleY - prevAngle[1];
+
+  Serial.print("[Y轴调试] current_y: "); Serial.print(current_y);
+  Serial.print(" | desired_y: "); Serial.print(desired_y);
+  Serial.print(" | error: "); Serial.print(current_y - desired_y);
+  Serial.print(" | tiltY: "); Serial.print(tiltY);
+  Serial.print(" | targetAngleY: "); Serial.print(targetAngleY);
+  Serial.print(" | deltaY: "); Serial.println(deltaY);
+
 }
 
 // ========== Setup ==========
