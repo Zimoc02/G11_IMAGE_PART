@@ -1,0 +1,102 @@
+#include <Arduino.h>
+#include <Servo.h>
+#include <Wire.h>
+
+// ========== Servo Configuration ==========
+Servo motorX, motorY;
+
+#define I2C_ADDR 0x08
+#define EXPECTED_BYTES 8  // 4 x int16_t
+
+#define BASE_ANGLE_X 43
+#define BASE_ANGLE_Y 50
+#define MIN_ANGLE_X (BASE_ANGLE_X - 8)
+#define MAX_ANGLE_X (BASE_ANGLE_X + 8)
+#define MIN_ANGLE_Y (BASE_ANGLE_Y - 6)
+#define MAX_ANGLE_Y (BASE_ANGLE_Y + 6)
+
+// ========== PID Parameters ==========
+float Kp = 2.0;
+float Ki = 0.0;
+float Kd = 0.1;
+
+// ========== PID State ==========
+float prevError[2] = {0, 0};
+float integral[2] = {0, 0};
+
+unsigned long lastPIDTime = 0;
+
+// ========== I2C Data ==========
+int16_t current_x = 0, current_y = 0;
+int16_t desired_x = 0, desired_y = 0;
+
+void receiveData(int byteCount) {
+  if (byteCount >= EXPECTED_BYTES) {
+    uint8_t buffer[EXPECTED_BYTES];
+    for (int i = 0; i < EXPECTED_BYTES && Wire.available(); i++) {
+      buffer[i] = Wire.read();
+    }
+
+    current_x = (int16_t)((buffer[0] << 8) | buffer[1]);
+    current_y = (int16_t)((buffer[2] << 8) | buffer[3]);
+    desired_x = (int16_t)((buffer[4] << 8) | buffer[5]);
+    desired_y = (int16_t)((buffer[6] << 8) | buffer[7]);
+  }
+}
+
+float PID(int axis, float current, float target, float deltaTime) {
+  float error = target - current;
+  integral[axis] += error * deltaTime;
+  float derivative = (error - prevError[axis]) / deltaTime;
+  prevError[axis] = error;
+
+  return Kp * error + Ki * integral[axis] + Kd * derivative;
+}
+
+void updateMotors() {
+  unsigned long now = millis();
+  float deltaTime = (now - lastPIDTime) / 1000.0;
+  if (deltaTime <= 0 || deltaTime > 0.5) deltaTime = 0.02;
+  lastPIDTime = now;
+
+  // PID 输出
+  float outputX = PID(0, current_x, desired_x, deltaTime);
+  float outputY = PID(1, current_y, desired_y, deltaTime);
+
+  // 输出转为角度
+  int angleX = constrain(BASE_ANGLE_X - outputX, MIN_ANGLE_X, MAX_ANGLE_X); // X轴：current > desired => 减小
+  int angleY = constrain(BASE_ANGLE_Y + outputY, MIN_ANGLE_Y, MAX_ANGLE_Y); // Y轴：current > desired => 增大
+
+  motorX.write(angleX);
+  motorY.write(angleY);
+
+  // Debug
+  Serial.print("Current: ");
+  Serial.print(current_x); Serial.print(", "); Serial.print(current_y);
+  Serial.print(" | Desired: ");
+  Serial.print(desired_x); Serial.print(", "); Serial.print(desired_y);
+  Serial.print(" | Angle: ");
+  Serial.print(angleX); Serial.print(", "); Serial.println(angleY);
+}
+
+void setup() {
+  Serial.begin(115200);
+  motorX.attach(5); // X轴 -> pin 5
+  motorY.attach(3); // Y轴 -> pin 3
+  motorX.write(BASE_ANGLE_X);
+  motorY.write(BASE_ANGLE_Y);
+
+  Wire.begin(I2C_ADDR);
+  Wire.onReceive(receiveData);
+
+  lastPIDTime = millis();
+  Serial.println("Simple PID Ready");
+}
+
+void loop() {
+  static unsigned long lastUpdate = 0;
+  if (millis() - lastUpdate >= 20) {  // 每 20ms 控制一次
+    updateMotors();
+    lastUpdate = millis();
+  }
+}
