@@ -62,7 +62,7 @@ farthest_point = None
 prediction_angle = None
 visited_positions = set()
 show_path = True
-
+limit_pionts_range = 20
 def calculate_distance(pt1, pt2):
     return math.hypot(pt1[0] - pt2[0], pt1[1] - pt2[1])
 
@@ -139,7 +139,7 @@ while True:
                         vx = int(center_x + 3 * math.cos(angle))
                         vy = int(center_y + 3 * math.sin(angle))
                             if 0 <= vx < frame_width and 0 <= vy < frame_height:
-                                if all(math.hypot(vx - ex, vy - ey) >= 20 for ex, ey in visited_positions):
+                                if all(math.hypot(vx - ex, vy - ey) >= limit_pionts_range for ex, ey in visited_positions):
                                 visited_positions.add((vx, vy))
 
                             
@@ -148,7 +148,7 @@ while True:
                             vx = center_x + dx
                             vy = center_y + dy
                             if 0 <= vx < frame_width and 0 <= vy < frame_height:
-                                if all(math.hypot(vx - ex, vy - ey) >= 20 for ex, ey in visited_positions):
+                                if all(math.hypot(vx - ex, vy - ey) >= limit_pionts_range for ex, ey in visited_positions):
                                 visited_positions.add((vx, vy))
 
 
