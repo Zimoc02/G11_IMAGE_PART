@@ -136,9 +136,147 @@ while True:
         break
     frame = cv2.addWeighted(path_overlay, 0.6, frame, 0.4, 0)
 
-    # 红球追踪、交点检测等逻辑放在这里（略，保持你的原代码）
-    # ... 省略部分（可以粘贴你原来中间处理部分）
+        frame_height, frame_width = frame.shape[:2]
+    detected = False
+    intersection_points = []
+    farthest_point = None
+    prediction_angle = None
 
+    if tracking_roi is not None:
+        x, y, w, h = tracking_roi
+        x, y = max(0, x), max(0, y)
+        w = min(w, frame_width - x)
+        h = min(h, frame_height - y)
+
+        if w > 0 and h > 0:
+            roi = frame[y:y + h, x:x + w]
+            hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+            red_mask = cv2.bitwise_or(
+                cv2.inRange(hsv_roi, lower_red_1, upper_red_1),
+                cv2.inRange(hsv_roi, lower_red_2, upper_red_2)
+            )
+            kernel = np.ones((5, 5), np.uint8)
+            red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+            contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            for contour in contours:
+                if cv2.contourArea(contour) > 200:
+                    (x_local, y_local, w_local, h_local) = cv2.boundingRect(contour)
+                    center_x = x + x_local + w_local // 2
+                    center_y = y + y_local + h_local // 2
+
+                    new_x = max(0, min(center_x - TRACKING_SIZE // 2, frame_width - TRACKING_SIZE))
+                    new_y = max(0, min(center_y - TRACKING_SIZE // 2, frame_height - TRACKING_SIZE))
+                    tracking_roi = (new_x, new_y, TRACKING_SIZE, TRACKING_SIZE)
+
+                    position_history.append((center_x, center_y))
+
+                    AUX_RADIUS = 3
+                    AUX_POINTS_PER_CIRCLE = 30
+                    for i in range(AUX_POINTS_PER_CIRCLE):
+                        angle = 2 * math.pi * i / AUX_POINTS_PER_CIRCLE
+                        vx = int(center_x + AUX_RADIUS * math.cos(angle))
+                        vy = int(center_y + AUX_RADIUS * math.sin(angle))
+                        if 0 <= vx < frame_width and 0 <= vy < frame_height:
+                            visited_positions.add((vx, vy))
+                    detected = True
+
+                    erase_radius = 3.5 * TRACKING_SIZE
+                    visited_positions = {
+                        (vx, vy) for (vx, vy) in visited_positions
+                        if calculate_distance((vx, vy), (center_x, center_y)) <= erase_radius
+                    }
+
+                    intersection_points, black_mask = detect_black_curve(roi, (x, y, w, h))
+                    colored_mask = cv2.cvtColor(black_mask, cv2.COLOR_GRAY2BGR)
+                    frame[y:y + h, x:x + w] = cv2.addWeighted(frame[y:y + h, x:x + w], 0.7, colored_mask, 0.3, 0)
+                    break
+
+    if not detected:
+        tracking_roi = None
+        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        red_mask = cv2.bitwise_or(
+            cv2.inRange(hsv_frame, lower_red_1, upper_red_1),
+            cv2.inRange(hsv_frame, lower_red_2, upper_red_2)
+        )
+        kernel = np.ones((5, 5), np.uint8)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        for contour in contours:
+            if cv2.contourArea(contour) > 20:
+                (x, y, w, h) = cv2.boundingRect(contour)
+                center_x = x + w // 2
+                center_y = y + h // 2
+                new_x = max(0, min(center_x - TRACKING_SIZE // 2, frame_width - TRACKING_SIZE))
+                new_y = max(0, min(center_y - TRACKING_SIZE // 2, frame_height - TRACKING_SIZE))
+                tracking_roi = (new_x, new_y, TRACKING_SIZE, TRACKING_SIZE)
+                break
+
+    if visited_positions and intersection_points and tracking_roi:
+        visited_list = list(visited_positions)
+        x_roi, y_roi, w_roi, h_roi = tracking_roi
+
+        def is_outside_roi(px, py):
+            return not (x_roi <= px <= x_roi + w_roi and y_roi <= py <= y_roi + h_roi)
+
+        filtered_visited = [(vx, vy) for vx, vy in visited_list if is_outside_roi(vx, vy)]
+
+        for (fx, fy) in filtered_visited:
+            cv2.circle(frame, (fx, fy), 2, (144, 238, 144), -1)
+
+        if filtered_visited:
+            total = len(filtered_visited)
+            best_score = -1
+            for idx_ip, ip in enumerate(intersection_points):
+                score = 0
+                for idx, vp in enumerate(filtered_visited):
+                    weight = (total - idx) / total
+                    dist = calculate_distance(ip, vp)
+                    score += weight * dist
+                if score > best_score:
+                    best_score = score
+                    farthest_point = ip
+
+    if farthest_point and position_history:
+        current_pos = position_history[-1]
+        dx = farthest_point[0] - current_pos[0]
+        dy = farthest_point[1] - current_pos[1]
+        prediction_angle = (math.degrees(math.atan2(-dy, dx)) + 360) % 360
+        send_two_points_16bit(current_pos[0], current_pos[1], farthest_point[0], farthest_point[1])
+
+    if tracking_roi:
+        x_roi, y_roi, w_roi, h_roi = tracking_roi
+        cv2.rectangle(frame, (x_roi, y_roi), (x_roi + w_roi, y_roi + h_roi), (0, 255, 255), 2)
+
+    y_offset = 30
+    line_height = 25
+    for idx, offset in enumerate([2, 4, 6, 8, 10]):
+        if len(position_history) >= offset:
+            pos = position_history[-offset]
+            color = (0, 255 - idx * 50, idx * 50)
+            cv2.circle(frame, pos, 7 - idx, color, -1)
+            cv2.putText(frame, f"T-{offset}: {pos}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            y_offset += line_height
+
+    for idx, (px, py) in enumerate(intersection_points):
+        cv2.circle(frame, (px, py), 5, (0, 255, 255), -1)
+        cv2.putText(frame, f"{idx+1}", (px+5, py-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+    if farthest_point and prediction_angle is not None:
+        cv2.circle(frame, farthest_point, 10, (255, 192, 203), -1)
+        if position_history:
+            current_pos = position_history[-1]
+            cv2.arrowedLine(frame, current_pos, farthest_point, (255, 192, 203), 2, tipLength=0.3)
+            cv2.putText(frame, f"Angle: {prediction_angle:.1f}°",
+                        (farthest_point[0] + 15, farthest_point[1] - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 192, 203), 2)
+
+    if show_path:
+        for vx, vy in visited_positions:
+            cv2.circle(frame, (vx, vy), 1, (255, 255, 255), -1)
+
+    cv2.imshow("Tracking", frame)
     # ====== 热键控制 ======
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
