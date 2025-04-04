@@ -1,0 +1,207 @@
+import cv2
+import numpy as np
+import os
+from scipy.spatial import cKDTree
+
+# ====== 拍照并提取路径骨架点，生成路径图层 overlay ======
+def generate_path_overlay(image):
+    # 1. 转灰度
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # 2. 高斯模糊
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # 3. 边缘检测
+    edges = cv2.Canny(blurred, 50, 150)
+
+    # 4. 查找轮廓
+    contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    # 5. 筛选蜿蜒路径轮廓
+    selected_path_image = np.zeros_like(image)
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        perimeter = cv2.arcLength(cnt, True)
+        if 100 < area < 2000 and perimeter > 200:
+            approx = cv2.approxPolyDP(cnt, 0.02 * perimeter, True)
+            if len(approx) > 5:
+                cv2.drawContours(selected_path_image, [cnt], -1, (255, 255, 255), 2)
+
+    # 6. 骨架化（需安装 opencv-contrib-python）
+    gray_selected = cv2.cvtColor(selected_path_image, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray_selected, 127, 255, cv2.THRESH_BINARY)
+    skeleton = cv2.ximgproc.thinning(binary)
+
+    # 7. 放置点
+    non_zero_points = np.column_stack(np.where(skeleton > 0))
+    kdtree = cKDTree(non_zero_points)
+    placed_points = []
+    used_indices = set()
+    for idx, point in enumerate(non_zero_points):
+        if idx not in used_indices:
+            placed_points.append(point)
+            indices = kdtree.query_ball_point(point, r=25)
+            used_indices.update(indices)
+    placed_points = np.array(placed_points)
+
+    # 8. 连线
+    connection_image = np.zeros_like(image)
+    kdtree_points = cKDTree(placed_points)
+    visited = set()
+    for i, point in enumerate(placed_points):
+        distances, indices = kdtree_points.query(point, k=3)
+        for idx in indices[1:3]:
+            if (i, idx) not in visited and (idx, i) not in visited:
+                nearest = placed_points[idx]
+                cv2.line(connection_image, (int(point[1]), int(point[0])), (int(nearest[1]), int(nearest[0])), (0, 255, 0), 2)
+                visited.add((i, idx))
+
+    # 9. 合成路径图层
+    overlay = image.copy()
+    for point in placed_points:
+        cv2.circle(overlay, (int(point[1]), int(point[0])), 8, (255, 0, 0), -1)  # 蓝色小球
+    overlay = cv2.addWeighted(overlay, 0.5, connection_image, 0.5, 0)
+
+    return overlay
+
+# ==== 摄像头初始化之后立即拍一张图进行路径分析 ====
+ret, initial_frame = video_capture.read()
+if not ret:
+    print("Error: Cannot capture initial frame.")
+    exit()
+
+path_overlay = generate_path_overlay(initial_frame)
+
+# ========== 主循环 / Main Loop ==========
+
+while True:
+    ret, frame = video_capture.read()
+    if not ret:
+        break
+
+    # ====== 叠加路径图层 / Overlay static path image ======
+    frame = cv2.addWeighted(path_overlay, 0.6, frame, 0.4, 0)
+
+    frame_height, frame_width = frame.shape[:2]
+    detected = False
+    intersection_points = []
+    farthest_point = None
+    prediction_angle = None
+
+    # ======= 如果已有追踪区域 / If tracking ROI exists =======
+    if tracking_roi is not None:
+        x, y, w, h = tracking_roi
+        x, y = max(0, x), max(0, y)
+        w = min(w, frame_width - x)
+        h = min(h, frame_height - y)
+
+        if w > 0 and h > 0:
+            roi = frame[y:y + h, x:x + w]
+
+            # ======= 红球检测 / Detect red ball =======
+            hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+            red_mask = cv2.bitwise_or(
+                cv2.inRange(hsv_roi, lower_red_1, upper_red_1),
+                cv2.inRange(hsv_roi, lower_red_2, upper_red_2)
+            )
+            kernel = np.ones((5, 5), np.uint8)
+            red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+            contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            for contour in contours:
+                if cv2.contourArea(contour) > 200:
+                    (x_local, y_local, w_local, h_local) = cv2.boundingRect(contour)
+                    center_x = x + x_local + w_local // 2
+                    center_y = y + y_local + h_local // 2
+
+                    new_x = max(0, min(center_x - TRACKING_SIZE // 2, frame_width - TRACKING_SIZE))
+                    new_y = max(0, min(center_y - TRACKING_SIZE // 2, frame_height - TRACKING_SIZE))
+                    tracking_roi = (new_x, new_y, TRACKING_SIZE, TRACKING_SIZE)
+
+                    position_history.append((center_x, center_y))
+
+                    # ======= 更新 visited_positions =======
+                    AUX_RADIUS = 3
+                    AUX_POINTS_PER_CIRCLE = 30
+                    for i in range(AUX_POINTS_PER_CIRCLE):
+                        angle = 2 * math.pi * i / AUX_POINTS_PER_CIRCLE
+                        vx = int(center_x + AUX_RADIUS * math.cos(angle))
+                        vy = int(center_y + AUX_RADIUS * math.sin(angle))
+                        if 0 <= vx < frame_width and 0 <= vy < frame_height:
+                            visited_positions.add((vx, vy))
+                    detected = True
+
+                    # 清除离当前点太远的路径点
+                    erase_radius = 3.5 * TRACKING_SIZE
+                    visited_positions = {
+                        (vx, vy) for (vx, vy) in visited_positions
+                        if calculate_distance((vx, vy), (center_x, center_y)) <= erase_radius
+                    }
+
+                    # 检测交点并混合可视化
+                    intersection_points, black_mask = detect_black_curve(roi, (x, y, w, h))
+                    colored_mask = cv2.cvtColor(black_mask, cv2.COLOR_GRAY2BGR)
+                    frame[y:y + h, x:x + w] = cv2.addWeighted(frame[y:y + h, x:x + w], 0.7, colored_mask, 0.3, 0)
+                    break
+
+    # ========== 如果未检测到红球 / No red ball detected ==========
+    if not detected:
+        tracking_roi = None
+        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        red_mask = cv2.bitwise_or(
+            cv2.inRange(hsv_frame, lower_red_1, upper_red_1),
+            cv2.inRange(hsv_frame, lower_red_2, upper_red_2)
+        )
+        kernel = np.ones((5, 5), np.uint8)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        for contour in contours:
+            if cv2.contourArea(contour) > 20:
+                (x, y, w, h) = cv2.boundingRect(contour)
+                center_x = x + w // 2
+                center_y = y + h // 2
+                new_x = max(0, min(center_x - TRACKING_SIZE // 2, frame_width - TRACKING_SIZE))
+                new_y = max(0, min(center_y - TRACKING_SIZE // 2, frame_height - TRACKING_SIZE))
+                tracking_roi = (new_x, new_y, TRACKING_SIZE, TRACKING_SIZE)
+                break
+
+    key = cv2.waitKey(1) & 0xFF
+
+    if key == ord('q'):
+        break
+
+    elif key == ord('h'):
+        show_path = not show_path
+        print("[Hotkey] Toggled path display:", "ON" if show_path else "OFF")
+
+    elif key == ord('c'):
+        visited_positions.clear()
+
+        if position_history:
+            current_x, current_y = position_history[-1]
+            for i in range(100):
+                angle = np.random.uniform(0, 2 * np.pi)
+                radius = np.random.uniform(0, 10)  # 控制半径范围，越大扩散越广
+                dx = int(radius * np.cos(angle))
+                dy = int(radius * np.sin(angle))
+                vx = current_x + dx
+                vy = current_y + dy
+                if 0 <= vx < frame_width and 0 <= vy < frame_height:
+                    visited_positions.add((vx, vy))
+            print(f"[Hotkey] Added 100 historical points near ({current_x}, {current_y})")
+        else:
+            print("[Hotkey] No current position to add points.")
+
+    elif key == ord('p'):
+        print("[Hotkey] Re-capturing path overlay...")
+        ret, new_frame = video_capture.read()
+        if ret:
+            path_overlay = generate_path_overlay(new_frame)
+            print("[Hotkey] New path overlay generated.")
+        else:
+            print("[Hotkey] Failed to capture new frame.")
+
+
+video_capture.release()
+cv2.destroyAllWindows()
