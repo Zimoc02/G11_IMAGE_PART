@@ -66,7 +66,7 @@ def generate_path_overlay(image):
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 50, 150)
     contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
+    overlay = image.copy()
     selected_path_image = np.zeros_like(image)
     for cnt in contours:
         area = cv2.contourArea(cnt)
