@@ -105,7 +105,7 @@ class BallTracker:
 # ========== Obstacle Database ==========    
 class HoleManager:
     def __init__(self):
-        self.holes = []  # Populate with hole positions in pixels
+        self.holes = [(535,173),(443,172),(364,180)]  # Populate with hole positions in pixels
         
     def check_collision(self, pos_px, vel_px):
         risk_vector = np.zeros(2)
