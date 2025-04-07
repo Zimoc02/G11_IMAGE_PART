@@ -68,7 +68,7 @@ def generate_path_overlay(image):
     for idx, point in enumerate(non_zero_points):
         if idx not in used_indices:
             placed_points.append(point)
-            indices = kdtree.query_ball_point(point, r=25)
+            indices = kdtree.query_ball_point(point, r=15)
             used_indices.update(indices)
     placed_points = np.array(placed_points)
     connection_image = np.zeros_like(image)
