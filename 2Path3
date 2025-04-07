@@ -52,7 +52,7 @@ def generate_path_overlay(image):
     for cnt in contours:
         area = cv2.contourArea(cnt)
         perimeter = cv2.arcLength(cnt, True)
-        if 100 < area < 2000 and perimeter > 200:
+        if 50 < area < 5000 and perimeter > 80:
             approx = cv2.approxPolyDP(cnt, 0.02 * perimeter, True)
             if len(approx) > 5:
                 cv2.drawContours(selected_path_image, [cnt], -1, (255, 255, 255), 2)
@@ -79,11 +79,16 @@ def generate_path_overlay(image):
             x, y, w, h = cv2.boundingRect(cnt)
             red_center = (y + h // 2, x + w // 2)
             max_area = area
+
+    # ===== fallback 起点 =====
     if red_center is None:
-        print("⚠️ 未检测到红球，自动使用路径首点作为起点。")
+        print("⚠️ 未检测到红球，自动使用路径骨架上的点作为起点")
         if len(non_zero_points) == 0:
             return image.copy(), None, []
-        red_center = tuple(non_zero_points[0])
+        center_yx = np.array([image.shape[0] // 2, image.shape[1] // 2])
+        distances = np.linalg.norm(non_zero_points - center_yx, axis=1)
+        nearest_idx = np.argmin(distances)
+        red_center = tuple(non_zero_points[nearest_idx])
 
     # 稀疏点处理
     kdtree = cKDTree(non_zero_points)
@@ -91,7 +96,7 @@ def generate_path_overlay(image):
     for idx, point in enumerate(non_zero_points):
         if idx not in used_indices:
             placed_points.append(point)
-            used_indices.update(kdtree.query_ball_point(point, r=35))
+            used_indices.update(kdtree.query_ball_point(point, r=20))
     placed_points = np.array(placed_points)
 
     # 从红球出发构造路径
@@ -105,7 +110,7 @@ def generate_path_overlay(image):
         next_point = None
         for idx in indices:
             candidate = tuple(all_points[idx])
-            if candidate not in used and calculate_distance(current_point, candidate) < 50:
+            if candidate not in used and calculate_distance(current_point, candidate) < 65:
                 next_point = candidate
                 break
         if next_point is None:
