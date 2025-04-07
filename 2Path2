@@ -1,0 +1,429 @@
+# ====== 导入必要的库 ======
+import cv2                         # OpenCV，用于图像处理与摄像头捕捉
+import numpy as np                # 数值处理库
+import math                       # 数学计算函数
+import smbus                      # I2C通信库
+from collections import deque     # 用于存储位置历史的队列
+from scipy.spatial import cKDTree # 用于快速近邻查询的KD树结构
+
+# ====== I2C 初始化：与Arduino通信相关设置 ======
+bus = smbus.SMBus(1)              # 使用I2C总线1
+arduino_address = 0x08            # Arduino设备地址
+
+# 将16位有符号整数转换为两个字节
+def int16_to_bytes(val):
+    val = int(val)
+    if val < 0:
+        val = (1 << 16) + val     # 转换为无符号16位格式
+    high = (val >> 8) & 0xFF      # 高8位
+    low = val & 0xFF              # 低8位
+    return [high, low]
+
+# 发送两个坐标点（共4个16位数）到Arduino
+def send_two_points_16bit(x1, y1, x2, y2):
+    data = int16_to_bytes(x1) + int16_to_bytes(y1) + int16_to_bytes(x2) + int16_to_bytes(y2)
+    try:
+        bus.write_i2c_block_data(arduino_address, 0x00, data)
+        print(f"Sent: ({x1}, {y1}), ({x2}, {y2})")  # 打印发送数据
+    except Exception as e:
+        print(f"I2C Send Error: {e}")
+# ====== 参数设置区域 ======
+TRACKING_SIZE = 100  # 红球ROI追踪区域的边长
+CURVE_PARAMS = {
+    'min_contour_area': 50,       # 黑线最小轮廓面积
+    'approx_epsilon': 0.02,       # 多边形逼近精度比例
+    'direction_samples': 5        # 决策方向时使用的历史点数
+}
+
+# 红色HSV阈值（分两段处理以覆盖完整色相范围）
+lower_red_1 = np.array([0, 100, 50])
+upper_red_1 = np.array([10, 255, 255])
+lower_red_2 = np.array([170, 100, 50])
+upper_red_2 = np.array([180, 255, 255])
+
+# 黑色HSV阈值（用于检测路径）
+lower_black = np.array([0, 0, 0])
+upper_black = np.array([180, 255, 50])
+
+# ====== 状态变量初始化 ======
+tracking_roi = None                     # 当前追踪的ROI区域
+position_history = deque(maxlen=10)     # 红球最近的位置历史记录
+intersection_points = []               # 当前检测到的黑线交叉点
+farthest_point = None                  # 推测的目标方向点
+prediction_angle = None                # 当前方向预测角度
+visited_positions = set()             # 红球访问过的点集合（避免回头）
+show_path = True                      # 是否显示访问路径
+
+def generate_path_overlay(image):
+    """
+    1. 提取图像中路径骨架；
+    2. 检测红球中心作为起点；
+    3. 从红球中心开始按顺序连线形成一条路径；
+    4. 返回路径图层、红球位置、以及路径坐标序列。
+    """
+    # ===== 路径骨架提取 =====
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    selected_path_image = np.zeros_like(image)
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        perimeter = cv2.arcLength(cnt, True)
+        if 100 < area < 2000 and perimeter > 200:
+            approx = cv2.approxPolyDP(cnt, 0.02 * perimeter, True)
+            if len(approx) > 5:
+                cv2.drawContours(selected_path_image, [cnt], -1, (255, 255, 255), 2)
+
+    gray_selected = cv2.cvtColor(selected_path_image, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray_selected, 127, 255, cv2.THRESH_BINARY)
+    skeleton = cv2.ximgproc.thinning(binary)
+    non_zero_points = np.column_stack(np.where(skeleton > 0))
+
+    # ===== 红球识别（作为起点）=====
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lower_red1 = np.array([0, 100, 50])
+    upper_red1 = np.array([10, 255, 255])
+    lower_red2 = np.array([170, 100, 50])
+    upper_red2 = np.array([180, 255, 255])
+    red_mask = cv2.bitwise_or(
+        cv2.inRange(hsv, lower_red1, upper_red1),
+        cv2.inRange(hsv, lower_red2, upper_red2)
+    )
+
+    kernel = np.ones((5, 5), np.uint8)
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+    contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    red_center = None
+    max_area = 0
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > 100 and area > max_area:
+            x, y, w, h = cv2.boundingRect(cnt)
+            center_x = x + w // 2
+            center_y = y + h // 2
+            red_center = (center_y, center_x)  # 注意和图像坐标 (row, col) 对应
+            max_area = area
+
+    if red_center is None:
+        print("未检测到红球，路径无法从起点构建。")
+        return image.copy(), None, []
+
+    # ===== 构建稀疏路径点 =====
+    kdtree = cKDTree(non_zero_points)
+    placed_points = []
+    used_indices = set()
+    for idx, point in enumerate(non_zero_points):
+        if idx not in used_indices:
+            placed_points.append(point)
+            indices = kdtree.query_ball_point(point, r=35)
+            used_indices.update(indices)
+    placed_points = np.array(placed_points)
+
+    # ===== 从红球位置出发构建有序路径 =====
+    all_points = placed_points.tolist()
+    ordered_path = [red_center]  # 将红球中心设为起点
+    used = set()
+    current_point = red_center
+    kdtree_path = cKDTree(all_points)
+
+    while True:
+        distances, indices = kdtree_path.query(current_point, k=len(all_points))
+        next_point = None
+        for idx in indices:
+            candidate = tuple(all_points[idx])
+            if candidate not in used and calculate_distance(current_point, candidate) < 50:
+                next_point = candidate
+                break
+        if next_point is None:
+            break
+        ordered_path.append(next_point)
+        used.add(next_point)
+        current_point = next_point
+
+    # ===== 生成可视化图层 =====
+    # ====== 绘制路径线段 ======
+    for i in range(len(ordered_path) - 1):
+        p1 = ordered_path[i]
+        p2 = ordered_path[i + 1]
+        cv2.line(overlay, (int(p1[1]), int(p1[0])), (int(p2[1]), int(p2[0])), (0, 255, 0), 2)
+
+    # ====== 每个路径点画一个蓝色小球 ======
+    for idx, p in enumerate(ordered_path):
+        cv2.circle(overlay, (int(p[1]), int(p[0])), 4, (255, 0, 0), -1)  # 蓝色小球
+
+        # 如果想加序号文字（可选）
+        # cv2.putText(overlay, f"{idx+1}", (int(p[1])+5, int(p[0])-5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+
+
+    # 红球起点标记
+    cv2.circle(overlay, (int(red_center[1]), int(red_center[0])), 10, (0, 255, 255), 2)
+    cv2.putText(overlay, "Start", (int(red_center[1]) + 10, int(red_center[0]) - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+    return overlay, red_center, ordered_path
+
+
+def calculate_distance(pt1, pt2):
+    return math.hypot(pt1[0] - pt2[0], pt1[1] - pt2[1])
+
+
+# ====== 黑线交叉点检测函数 ======
+def detect_black_curve(roi, roi_position):
+    """
+    输入ROI区域图像，检测其中触碰边缘的黑色轮廓点，
+    返回交叉点列表及掩码图像。
+    """
+    x, y, w, h = roi_position
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, lower_black, upper_black)  # 提取黑色区域
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)  # 闭运算去噪
+    current_intersections = []
+
+    # 寻找外部轮廓
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        if cv2.contourArea(contour) > CURVE_PARAMS['min_contour_area']:
+            perimeter = cv2.arcLength(contour, True)
+            epsilon = CURVE_PARAMS['approx_epsilon'] * perimeter
+            approx = cv2.approxPolyDP(contour, epsilon, True)  # 多边形拟合
+
+            # 判断轮廓是否接触边界，若是则视为交叉点
+            for point in approx:
+                px, py = point[0]
+                if px == 0 or px == w - 1 or py == 0 or py == h - 1:
+                    global_x = x + px
+                    global_y = y + py
+                    current_intersections.append((global_x, global_y))
+
+    return current_intersections, mask
+
+# ====== 摄像头初始化 & 路径图层生成 ======
+pipeline = (
+    "v4l2src device=/dev/video0 ! "
+    "image/jpeg,width=1280,height=720,framerate=60/1 ! "
+    "jpegdec ! "
+    "videoconvert ! "
+    "appsink"
+)
+video_capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+
+if not video_capture.isOpened():
+    print("错误：无法打开摄像头")
+    exit()
+
+# 获取初始图像用于提取路径图层
+ret, initial_frame = video_capture.read()
+if not ret:
+    print("错误：无法捕捉初始图像")
+    exit()
+
+# 提取并保存初始路径图层（骨架+路径点+连接线）
+path_overlay = generate_path_overlay(initial_frame)
+
+# ====== 主循环：实时视频处理与红球追踪逻辑 ======
+while True:
+    ret, frame = video_capture.read()
+    if not ret:
+        break
+
+    # 将路径图层叠加到原始帧上（用于可视化）
+    frame = cv2.addWeighted(path_overlay, 0.6, frame, 0.4, 0)
+    frame_height, frame_width = frame.shape[:2]
+    
+    # 每帧重置状态
+    detected = False
+    intersection_points = []
+    farthest_point = None
+    prediction_angle = None
+
+    # ==== 若有正在追踪的ROI区域 ====
+    if tracking_roi is not None:
+        x, y, w, h = tracking_roi
+        x, y = max(0, x), max(0, y)
+        w = min(w, frame_width - x)
+        h = min(h, frame_height - y)
+
+        if w > 0 and h > 0:
+            roi = frame[y:y + h, x:x + w]
+            hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+            # 提取红色掩码区域
+            red_mask = cv2.bitwise_or(
+                cv2.inRange(hsv_roi, lower_red_1, upper_red_1),
+                cv2.inRange(hsv_roi, lower_red_2, upper_red_2)
+            )
+            kernel = np.ones((5, 5), np.uint8)
+            red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+
+            contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                if cv2.contourArea(contour) > 200:
+                    # 找到红球中心点，更新ROI区域
+                    (x_local, y_local, w_local, h_local) = cv2.boundingRect(contour)
+                    center_x = x + x_local + w_local // 2
+                    center_y = y + y_local + h_local // 2
+
+                    new_x = max(0, min(center_x - TRACKING_SIZE // 2, frame_width - TRACKING_SIZE))
+                    new_y = max(0, min(center_y - TRACKING_SIZE // 2, frame_height - TRACKING_SIZE))
+                    tracking_roi = (new_x, new_y, TRACKING_SIZE, TRACKING_SIZE)
+
+                    # 添加当前位置到历史记录
+                    position_history.append((center_x, center_y))
+
+                    # 在红球周围添加圆形访问标记点（避免回头）
+                    AUX_RADIUS = 3
+                    AUX_POINTS_PER_CIRCLE = 30
+                    for i in range(AUX_POINTS_PER_CIRCLE):
+                        angle = 2 * math.pi * i / AUX_POINTS_PER_CIRCLE
+                        vx = int(center_x + AUX_RADIUS * math.cos(angle))
+                        vy = int(center_y + AUX_RADIUS * math.sin(angle))
+                        if 0 <= vx < frame_width and 0 <= vy < frame_height:
+                            visited_positions.add((vx, vy))
+                    detected = True
+
+                    # 擦除远离当前位置的旧访问点
+                    erase_radius = 3.5 * TRACKING_SIZE
+                    visited_positions = {
+                        (vx, vy) for (vx, vy) in visited_positions
+                        if calculate_distance((vx, vy), (center_x, center_y)) <= erase_radius
+                    }
+
+                    # 检测黑色路径交叉点
+                    intersection_points, black_mask = detect_black_curve(roi, (x, y, w, h))
+                    colored_mask = cv2.cvtColor(black_mask, cv2.COLOR_GRAY2BGR)
+                    frame[y:y + h, x:x + w] = cv2.addWeighted(frame[y:y + h, x:x + w], 0.7, colored_mask, 0.3, 0)
+                    break
+    # ==== 若未检测到红球，则尝试重新搜索 ====
+    if not detected:
+        tracking_roi = None  # 重置ROI
+        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        # 提取整帧中的红色掩码
+        red_mask = cv2.bitwise_or(
+            cv2.inRange(hsv_frame, lower_red_1, upper_red_1),
+            cv2.inRange(hsv_frame, lower_red_2, upper_red_2)
+        )
+        kernel = np.ones((5, 5), np.uint8)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        for contour in contours:
+            if cv2.contourArea(contour) > 20:
+                (x, y, w, h) = cv2.boundingRect(contour)
+                center_x = x + w // 2
+                center_y = y + h // 2
+                new_x = max(0, min(center_x - TRACKING_SIZE // 2, frame_width - TRACKING_SIZE))
+                new_y = max(0, min(center_y - TRACKING_SIZE // 2, frame_height - TRACKING_SIZE))
+                tracking_roi = (new_x, new_y, TRACKING_SIZE, TRACKING_SIZE)
+                break
+
+    # ====== 根据交叉点与历史点计算最远方向点 ======
+    if visited_positions and intersection_points and tracking_roi:
+        visited_list = list(visited_positions)
+        x_roi, y_roi, w_roi, h_roi = tracking_roi
+
+        # 判断某点是否在当前ROI之外（避免回头）
+        def is_outside_roi(px, py):
+            return not (x_roi <= px <= x_roi + w_roi and y_roi <= py <= y_roi + h_roi)
+
+        filtered_visited = [(vx, vy) for vx, vy in visited_list if is_outside_roi(vx, vy)]
+
+        # 可视化访问点
+        for (fx, fy) in filtered_visited:
+            cv2.circle(frame, (fx, fy), 2, (144, 238, 144), -1)
+
+        # 评估每个交叉点与历史点的加权距离得分，选择最远交叉点
+        if filtered_visited:
+            total = len(filtered_visited)
+            best_score = -1
+            for idx_ip, ip in enumerate(intersection_points):
+                score = 0
+                for idx, vp in enumerate(filtered_visited):
+                    weight = (total - idx) / total  # 越靠近现在权重越大
+                    dist = calculate_distance(ip, vp)
+                    score += weight * dist
+                if score > best_score:
+                    best_score = score
+                    farthest_point = ip
+        # ====== 若找到预测方向，则计算角度并发送I2C指令 ======
+    if farthest_point and position_history:
+        current_pos = position_history[-1]
+        dx = farthest_point[0] - current_pos[0]
+        dy = farthest_point[1] - current_pos[1]
+        prediction_angle = (math.degrees(math.atan2(-dy, dx)) + 360) % 360  # 转为角度，范围[0, 360)
+        
+        # 发送当前位置和预测点位置到Arduino
+        send_two_points_16bit(current_pos[0], current_pos[1], farthest_point[0], farthest_point[1])
+        # ====== 可视化追踪框 ======
+    if tracking_roi:
+        x_roi, y_roi, w_roi, h_roi = tracking_roi
+        cv2.rectangle(frame, (x_roi, y_roi), (x_roi + w_roi, y_roi + h_roi), (0, 255, 255), 2)
+        # ====== 绘制历史位置点（不同颜色标记时间） ======
+    y_offset = 30
+    line_height = 25
+    for idx, offset in enumerate([2, 4, 6, 8, 10]):
+        if len(position_history) >= offset:
+            pos = position_history[-offset]
+            color = (0, 255 - idx * 50, idx * 50)
+            cv2.circle(frame, pos, 7 - idx, color, -1)
+            cv2.putText(frame, f"T-{offset}: {pos}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            y_offset += line_height
+        # ====== 可视化所有交叉点编号 ======
+    for idx, (px, py) in enumerate(intersection_points):
+        cv2.circle(frame, (px, py), 5, (0, 255, 255), -1)
+        cv2.putText(frame, f"{idx+1}", (px+5, py-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        # ====== 可视化最远预测方向点与箭头 ======
+    if farthest_point and prediction_angle is not None:
+        cv2.circle(frame, farthest_point, 10, (255, 192, 203), -1)  # 粉色目标点
+        if position_history:
+            current_pos = position_history[-1]
+            cv2.arrowedLine(frame, current_pos, farthest_point, (255, 192, 203), 2, tipLength=0.3)
+            cv2.putText(frame, f"Angle: {prediction_angle:.1f}°",
+                        (farthest_point[0] + 15, farthest_point[1] - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 192, 203), 2)
+        # ====== 可选：显示所有访问过的位置路径 ======
+    if show_path:
+        for vx, vy in visited_positions:
+            cv2.circle(frame, (vx, vy), 1, (255, 255, 255), -1)  # 白色小点
+        # ====== 显示图像与按键响应 ======
+    cv2.imshow("Tracking", frame)
+
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
+        break  # 退出程序
+    elif key == ord('h'):
+        show_path = not show_path
+        print("[Hotkey] Toggled path display:", "ON" if show_path else "OFF")
+    elif key == ord('c'):
+        # 清除路径访问点，并围绕当前位置随机生成一批点
+        visited_positions.clear()
+        if position_history:
+            current_x, current_y = position_history[-1]
+            for i in range(100):
+                angle = np.random.uniform(0, 2 * np.pi)
+                radius = np.random.uniform(0, 10)
+                dx = int(radius * np.cos(angle))
+                dy = int(radius * np.sin(angle))
+                vx = current_x + dx
+                vy = current_y + dy
+                if 0 <= vx < frame.shape[1] and 0 <= vy < frame.shape[0]:
+                    visited_positions.add((vx, vy))
+        else:
+            print("[Hotkey] No current position to add points.")
+    elif key == ord('p'):
+        # 重新捕获路径图层
+        print("[Hotkey] Re-capturing path overlay...")
+        ret, new_frame = video_capture.read()
+        if ret:
+            path_overlay = generate_path_overlay(new_frame)
+            print("[Hotkey] New path overlay generated.")
+        else:
+            print("[Hotkey] Failed to capture new frame.")
+
+# ====== 退出与释放资源 ======
+video_capture.release()
+cv2.destroyAllWindows()
