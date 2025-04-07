@@ -1,0 +1,7 @@
+  File "/home/teyoung/vid10006.py", line 234, in <module>
+    frame = cv2.addWeighted(path_overlay, 0.6, frame, 0.4, 0)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+cv2.error: OpenCV(4.6.0) :-1: error: (-5:Bad argument) in function 'addWeighted'
+> Overload resolution failed:
+>  - src1 is not a numerical tuple
+>  - Expected Ptr<cv::UMat> for argument 'src1'
