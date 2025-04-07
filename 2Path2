@@ -222,7 +222,8 @@ if not ret:
     exit()
 
 # 提取并保存初始路径图层（骨架+路径点+连接线）
-path_overlay = generate_path_overlay(initial_frame)
+path_overlay, red_center, ordered_path = generate_path_overlay(initial_frame)
+
 
 # ====== 主循环：实时视频处理与红球追踪逻辑 ======
 while True:
