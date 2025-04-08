@@ -1,0 +1,186 @@
+import cv2
+import numpy as np
+import math
+import smbus
+from collections import deque
+from scipy.spatial import cKDTree
+from scipy.interpolate import splprep, splev
+
+# ========== I2C 设置 ==========
+bus = smbus.SMBus(1)
+arduino_address = 0x08
+
+def int16_to_bytes(val):
+    val = int(val)
+    if val < 0:
+        val = (1 << 16) + val
+    return [(val >> 8) & 0xFF, val & 0xFF]
+
+def send_two_points_16bit(x1, y1, x2, y2):
+    data = int16_to_bytes(x1) + int16_to_bytes(y1) + int16_to_bytes(x2) + int16_to_bytes(y2)
+    try:
+        bus.write_i2c_block_data(arduino_address, 0x00, data)
+        print(f"Sent: ({x1}, {y1}) -> ({x2}, {y2})")
+    except Exception as e:
+        print(f"I2C Send Error: {e}")
+
+def calculate_distance(pt1, pt2):
+    return math.hypot(pt1[0] - pt2[0], pt1[1] - pt2[1])
+
+def find_target_point(current_pos, path_points, look_ahead=40, min_points=5):
+    if len(path_points) < min_points:
+        return None
+    path_points_np = np.array(path_points)
+    distances = np.linalg.norm(path_points_np - current_pos, axis=1)
+    nearest_idx = np.argmin(distances)
+    target_idx = min(nearest_idx + look_ahead, len(path_points_np) - 1)
+    return tuple(path_points_np[target_idx])
+
+# ========== 参数设置 ==========
+TRACKING_SIZE = 100
+LOOK_AHEAD_POINTS = 40
+INTERPOLATION_COUNT = 2
+
+lower_red_1 = np.array([0, 100, 50])
+upper_red_1 = np.array([10, 255, 255])
+lower_red_2 = np.array([170, 100, 50])
+upper_red_2 = np.array([180, 255, 255])
+
+# ========== 路径生成函数 ==========
+def generate_path_overlay(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    selected_path_image = np.zeros_like(image)
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        perimeter = cv2.arcLength(cnt, True)
+        if 50 < area < 5000 and perimeter > 80:
+            approx = cv2.approxPolyDP(cnt, 0.02 * perimeter, True)
+            if len(approx) > 5:
+                cv2.drawContours(selected_path_image, [cnt], -1, (255, 255, 255), 2)
+
+    gray_selected = cv2.cvtColor(selected_path_image, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray_selected, 127, 255, cv2.THRESH_BINARY)
+    skeleton = cv2.ximgproc.thinning(binary)
+    non_zero_points = np.column_stack(np.where(skeleton > 0))
+
+    if len(non_zero_points) == 0:
+        return image.copy(), None, []
+
+    # 稀疏化骨架点
+    kdtree = cKDTree(non_zero_points)
+    placed_points, used_indices = [], set()
+    for idx, point in enumerate(non_zero_points):
+        if idx not in used_indices:
+            placed_points.append(point)
+            used_indices.update(kdtree.query_ball_point(point, r=15))
+    placed_points = np.array(placed_points)
+
+    # 按顺序构造路径
+    ordered_path = [placed_points[0]]
+    used = set()
+    current_point = placed_points[0]
+    all_points = placed_points.tolist()
+    kdtree_path = cKDTree(all_points)
+    while True:
+        distances, indices = kdtree_path.query(current_point, k=len(all_points))
+        next_point = None
+        for idx in indices:
+            candidate = tuple(all_points[idx])
+            if candidate not in used and calculate_distance(current_point, candidate) < 65:
+                next_point = candidate
+                break
+        if next_point is None:
+            break
+        ordered_path.append(next_point)
+        used.add(next_point)
+        current_point = next_point
+
+    # B样条插值
+    if len(ordered_path) >= 4:
+        path_array = np.array(ordered_path)
+        y_points, x_points = path_array[:, 0], path_array[:, 1]
+        tck, u = splprep([x_points, y_points], s=5, k=3)
+        u_fine = np.linspace(0, 1, len(ordered_path) * 5)
+        x_smooth, y_smooth = splev(u_fine, tck)
+        refined_path = [(int(y), int(x)) for x, y in zip(x_smooth, y_smooth)]
+    else:
+        refined_path = ordered_path.copy()
+
+    overlay = image.copy()
+    for i in range(len(refined_path) - 1):
+        cv2.line(overlay, (refined_path[i][1], refined_path[i][0]),
+                          (refined_path[i + 1][1], refined_path[i + 1][0]), (0, 255, 255), 1)
+
+    return overlay, refined_path
+
+# ========== 摄像头启动 ==========
+pipeline = (
+    "v4l2src device=/dev/video0 ! "
+    "image/jpeg,width=1280,height=720,framerate=60/1 ! "
+    "jpegdec ! videoconvert ! appsink"
+)
+video_capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+if not video_capture.isOpened():
+    print("错误：无法打开摄像头")
+    exit()
+
+ret, initial_frame = video_capture.read()
+if not ret:
+    print("错误：无法获取初始图像")
+    exit()
+
+path_overlay, refined_path = generate_path_overlay(initial_frame)
+print(f"路径点数：{len(refined_path)}")
+
+# ========== 主循环 ==========
+while True:
+    ret, frame = video_capture.read()
+    if not ret:
+        break
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask1 = cv2.inRange(hsv, lower_red_1, upper_red_1)
+    mask2 = cv2.inRange(hsv, lower_red_2, upper_red_2)
+    red_mask = cv2.bitwise_or(mask1, mask2)
+
+    kernel = np.ones((5, 5), np.uint8)
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_DILATE, kernel)
+
+    contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    red_center = None
+    max_area = 0
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > 100 and area > max_area:
+            x, y, w, h = cv2.boundingRect(cnt)
+            red_center = (y + h // 2, x + w // 2)
+            max_area = area
+
+    if red_center is not None and len(refined_path) > 0:
+        current_pos = np.array(red_center)
+        target_point = find_target_point(current_pos, refined_path, look_ahead=LOOK_AHEAD_POINTS)
+        if target_point is not None:
+            tx, ty = target_point
+            cx, cy = red_center
+            send_two_points_16bit(tx, ty, cx, cy)
+            cv2.line(frame, (cy, cx), (ty, tx), (0, 0, 255), 2)
+            cv2.circle(frame, (ty, tx), 6, (0, 0, 255), -1)
+
+    frame = cv2.addWeighted(path_overlay, 0.6, frame, 0.4, 0)
+    cv2.imshow("Red Ball Path Tracking", frame)
+
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
+        break
+    elif key == ord('p'):
+        ret, new_frame = video_capture.read()
+        if ret:
+            path_overlay, refined_path = generate_path_overlay(new_frame)
+            print("[P] 路径图层已重新生成")
+
+video_capture.release()
+cv2.destroyAllWindows()
