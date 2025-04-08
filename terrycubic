@@ -119,6 +119,26 @@ class BallTracker:
                 max_area = area
         return center
 
+def generate_path_overlay(frame):
+    """
+    Process the input frame and return (debug_overlay, refined_path)
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
+    
+    # Find contours or any path extraction logic
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    refined_path = []
+
+    for cnt in contours:
+        for pt in cnt:
+            y, x = pt[0][1], pt[0][0]  # Convert to (row, col)
+            refined_path.append((y, x))
+
+    overlay = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    return overlay, refined_path
+
+
 # ========== Main Processing Pipeline ==========
 def main():
     # Initialize components
