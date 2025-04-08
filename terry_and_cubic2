@@ -4,7 +4,6 @@ import math
 import smbus
 from collections import deque
 from scipy.spatial import cKDTree
-from scipy.interpolate import splprep, splev
 
 # I2C 设置
 bus = smbus.SMBus(1)
@@ -25,6 +24,7 @@ def send_two_points_16bit(x1, y1, x2, y2):
         print(f"I2C Send Error: {e}")
 
 # 参数
+INTERPOLATION_COUNT = 2
 lower_red_1 = np.array([0, 100, 50])
 upper_red_1 = np.array([10, 255, 255])
 lower_red_2 = np.array([170, 100, 50])
@@ -32,9 +32,29 @@ upper_red_2 = np.array([180, 255, 255])
 lower_black = np.array([0, 0, 0])
 upper_black = np.array([180, 255, 50])
 
+# 实时识别红球位置
+def detect_red_ball(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    red_mask = cv2.bitwise_or(
+        cv2.inRange(hsv, lower_red_1, upper_red_1),
+        cv2.inRange(hsv, lower_red_2, upper_red_2)
+    )
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    red_center = None
+    max_area = 0
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > 100 and area > max_area:
+            x, y, w, h = cv2.boundingRect(cnt)
+            red_center = (y + h // 2, x + w // 2)
+            max_area = area
+    return red_center
+
 def calculate_distance(pt1, pt2):
     return math.hypot(pt1[0] - pt2[0], pt1[1] - pt2[1])
 
+# 路径图层函数
 def generate_path_overlay(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -56,9 +76,13 @@ def generate_path_overlay(image):
 
     if len(non_zero_points) == 0:
         print("⚠️ 无骨架点")
-        return image.copy(), []
+        return image.copy(), (0, 0), []
 
-    # 稀疏化路径点
+    center_yx = np.array([image.shape[0] // 2, image.shape[1] // 2])
+    distances = np.linalg.norm(non_zero_points - center_yx, axis=1)
+    nearest_idx = np.argmin(distances)
+    red_center = tuple(non_zero_points[nearest_idx])
+
     kdtree = cKDTree(non_zero_points)
     placed_points, used_indices = [], set()
     for idx, point in enumerate(non_zero_points):
@@ -67,16 +91,16 @@ def generate_path_overlay(image):
             used_indices.update(kdtree.query_ball_point(point, r=15))
     placed_points = np.array(placed_points)
 
-    # 按近邻排序
-    ordered_path = [placed_points[0]]
+    all_points = placed_points.tolist()
+    ordered_path = [red_center]
     used = set()
-    current_point = tuple(placed_points[0])
-    kdtree_path = cKDTree(placed_points)
+    current_point = red_center
+    kdtree_path = cKDTree(all_points)
     while True:
-        distances, indices = kdtree_path.query(current_point, k=len(placed_points))
+        distances, indices = kdtree_path.query(current_point, k=len(all_points))
         next_point = None
         for idx in indices:
-            candidate = tuple(placed_points[idx])
+            candidate = tuple(all_points[idx])
             if candidate not in used and calculate_distance(current_point, candidate) < 65:
                 next_point = candidate
                 break
@@ -86,56 +110,23 @@ def generate_path_overlay(image):
         used.add(next_point)
         current_point = next_point
 
-    if len(ordered_path) >= 4:
-    path_array = np.array(ordered_path)
-    y_points, x_points = path_array[:, 0], path_array[:, 1]
+    refined_path = []
+    for i in range(len(ordered_path) - 1):
+        p1 = np.array(ordered_path[i])
+        p2 = np.array(ordered_path[i + 1])
+        refined_path.append(tuple(p1))
+        for j in range(1, INTERPOLATION_COUNT + 1):
+            ratio = j / (INTERPOLATION_COUNT + 1)
+            new_point = tuple(((1 - ratio) * p1 + ratio * p2).astype(int))
+            refined_path.append(new_point)
+    refined_path.append(tuple(ordered_path[-1]))
 
-    # 检查输入是否合法
-    if np.any(np.isnan(x_points)) or np.any(np.isnan(y_points)) or \
-       np.any(np.isinf(x_points)) or np.any(np.isinf(y_points)):
-        print("⚠️ 路径点中包含无效值（NaN 或 Inf），无法拟合 B 样条")
-        refined_path = ordered_path.copy()
-    else:
-        try:
-            tck, u = splprep([x_points, y_points], s=5, k=3)
-            u_fine = np.linspace(0, 1, len(ordered_path) * 5)
-            x_smooth, y_smooth = splev(u_fine, tck)
-            refined_path = [(int(y), int(x)) for x, y in zip(x_smooth, y_smooth)]
-        except Exception as e:
-            print(f"⚠️ B样条拟合失败: {e}")
-            refined_path = ordered_path.copy()
-else:
-    print("⚠️ 路径点不足4个，无法拟合 B 样条")
-    refined_path = ordered_path.copy()
-
-
-    # 可视化路径图层
     overlay = image.copy()
     for i in range(len(refined_path) - 1):
         cv2.line(overlay, (refined_path[i][1], refined_path[i][0]),
-                          (refined_path[i + 1][1], refined_path[i + 1][0]), (0, 255, 255), 2)
-    for p in refined_path:
-        cv2.circle(overlay, (p[1], p[0]), 3, (255, 0, 0), -1)
+                          (refined_path[i + 1][1], refined_path[i + 1][0]), (0, 255, 255), 1)
 
-    return overlay, refined_path
-
-def detect_red_ball(frame):
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    red_mask = cv2.bitwise_or(
-        cv2.inRange(hsv, lower_red_1, upper_red_1),
-        cv2.inRange(hsv, lower_red_2, upper_red_2)
-    )
-    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    red_center = None
-    max_area = 0
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area > 100 and area > max_area:
-            x, y, w, h = cv2.boundingRect(cnt)
-            red_center = (y + h // 2, x + w // 2)
-            max_area = area
-    return red_center
+    return overlay, red_center, refined_path
 
 # 摄像头启动
 pipeline = (
@@ -150,11 +141,11 @@ if not video_capture.isOpened():
 
 ret, initial_frame = video_capture.read()
 if not ret:
-    print("错误：无法读取初始图像")
+    print("错误：无法获取初始图像")
     exit()
 
-path_overlay, refined_path = generate_path_overlay(initial_frame)
-print(f"预设路径点数：{len(refined_path)}")
+path_overlay, red_center, refined_path = generate_path_overlay(initial_frame)
+print(f"路径起点：{red_center}，路径长度：{len(refined_path)}")
 
 while True:
     ret, frame = video_capture.read()
@@ -162,14 +153,12 @@ while True:
         break
 
     red_center = detect_red_ball(frame)
-    display_frame = cv2.addWeighted(path_overlay, 0.6, frame, 0.4, 0)
+    display = cv2.addWeighted(path_overlay, 0.6, frame, 0.4, 0)
 
     if red_center:
-        cv2.circle(display_frame, (red_center[1], red_center[0]), 8, (0, 255, 255), 2)
-        cv2.putText(display_frame, "Red Ball", (red_center[1] + 10, red_center[0] - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        cv2.circle(display, (red_center[1], red_center[0]), 8, (0, 255, 255), 2)
 
-    cv2.imshow("Red Ball Tracker", display_frame)
+    cv2.imshow("Red Ball Tracking", display)
 
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
@@ -177,8 +166,8 @@ while True:
     elif key == ord('p'):
         ret, new_frame = video_capture.read()
         if ret:
-            path_overlay, refined_path = generate_path_overlay(new_frame)
-            print("[P] 重新生成路径")
+            path_overlay, red_center, refined_path = generate_path_overlay(new_frame)
+            print("[热键P] 重新生成路径图层")
     elif key == ord('t'):
         if red_center and refined_path:
             distances = [calculate_distance(red_center, pt) for pt in refined_path]
@@ -186,9 +175,9 @@ while True:
             target_idx = nearest_idx + 3
             if target_idx < len(refined_path):
                 target_point = refined_path[target_idx]
-                print(f"[T] 当前红球位置: {red_center}，目标点: {target_point}")
+                print(f"[热键T] 当前红球位置: {red_center}，目标点: {target_point}")
             else:
-                print("[T] 红球靠近路径末端，无法获取目标点")
+                print("[热键T] 红球靠近路径尾部，无法获取目标点")
 
 video_capture.release()
 cv2.destroyAllWindows()
