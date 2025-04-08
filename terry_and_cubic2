@@ -86,16 +86,28 @@ def generate_path_overlay(image):
         used.add(next_point)
         current_point = next_point
 
-    # B样条平滑
     if len(ordered_path) >= 4:
-        path_array = np.array(ordered_path)
-        y_points, x_points = path_array[:, 0], path_array[:, 1]
-        tck, u = splprep([x_points, y_points], s=5, k=3)
-        u_fine = np.linspace(0, 1, len(ordered_path) * 5)
-        x_smooth, y_smooth = splev(u_fine, tck)
-        refined_path = [(int(y), int(x)) for x, y in zip(x_smooth, y_smooth)]
-    else:
+    path_array = np.array(ordered_path)
+    y_points, x_points = path_array[:, 0], path_array[:, 1]
+
+    # 检查输入是否合法
+    if np.any(np.isnan(x_points)) or np.any(np.isnan(y_points)) or \
+       np.any(np.isinf(x_points)) or np.any(np.isinf(y_points)):
+        print("⚠️ 路径点中包含无效值（NaN 或 Inf），无法拟合 B 样条")
         refined_path = ordered_path.copy()
+    else:
+        try:
+            tck, u = splprep([x_points, y_points], s=5, k=3)
+            u_fine = np.linspace(0, 1, len(ordered_path) * 5)
+            x_smooth, y_smooth = splev(u_fine, tck)
+            refined_path = [(int(y), int(x)) for x, y in zip(x_smooth, y_smooth)]
+        except Exception as e:
+            print(f"⚠️ B样条拟合失败: {e}")
+            refined_path = ordered_path.copy()
+else:
+    print("⚠️ 路径点不足4个，无法拟合 B 样条")
+    refined_path = ordered_path.copy()
+
 
     # 可视化路径图层
     overlay = image.copy()
