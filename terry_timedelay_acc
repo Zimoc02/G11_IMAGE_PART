@@ -259,7 +259,14 @@ while True:
                                 (red_center[1], red_center[0]),
                                 (target_point[1], target_point[0]),
                                 (255, 0, 255), 2, tipLength=0.3)
-                
+                for i, pt in enumerate(history_points):
+                    if i >= len(errors):
+                        break
+                    err_val = errors[i]
+                    err_clamped = min(int(err_val * 3), 255)  # 控制颜色范围
+                    color = (0, 255 - err_clamped, err_clamped)  # 绿色 = 精确，红色 = 偏差大
+                    cv2.circle(display, (pt[1], pt[0]), 2, color, -1)
+
                 
                 nearest_path_point = refined_path[nearest_idx]
                 euclidean_error = calculate_distance(red_center, nearest_path_point)
