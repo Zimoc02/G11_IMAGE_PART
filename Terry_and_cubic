@@ -98,16 +98,34 @@ def generate_path_overlay(image):
         used.add(next_point)
         current_point = next_point
 
-    # B样条插值
-    if len(ordered_path) >= 4:
-        path_array = np.array(ordered_path)
-        y_points, x_points = path_array[:, 0], path_array[:, 1]
-        tck, u = splprep([x_points, y_points], s=5, k=3)
-        u_fine = np.linspace(0, 1, len(ordered_path) * 5)
-        x_smooth, y_smooth = splev(u_fine, tck)
-        refined_path = [(int(y), int(x)) for x, y in zip(x_smooth, y_smooth)]
-    else:
-        refined_path = ordered_path.copy()
+        # B样条插值
+        if len(ordered_path) >= 4:
+            try:
+                path_array = np.array(ordered_path, dtype=np.float32)
+                y_points, x_points = path_array[:, 0], path_array[:, 1]
+
+                # 检查是否有 NaN 或 Inf
+                if (np.isnan(x_points).any() or np.isnan(y_points).any() or
+                    np.isinf(x_points).any() or np.isinf(y_points).any()):
+                    raise ValueError("x_points or y_points contains NaN or Inf.")
+
+                # 调试输出
+                print(f"[Debug] Interpolating {len(x_points)} points")
+                print(f"[Debug] x_points range: {x_points.min()} ~ {x_points.max()}")
+                print(f"[Debug] y_points range: {y_points.min()} ~ {y_points.max()}")
+
+                tck, u = splprep([x_points, y_points], s=5, k=3)
+                u_fine = np.linspace(0, 1, len(ordered_path) * 5)
+                x_smooth, y_smooth = splev(u_fine, tck)
+
+                refined_path = [(int(y), int(x)) for x, y in zip(x_smooth, y_smooth)]
+
+            except Exception as e:
+                print(f"[Warning] 插值失败: {e}")
+                refined_path = ordered_path.copy()
+        else:
+            refined_path = ordered_path.copy()
+
 
     overlay = image.copy()
     for i in range(len(refined_path) - 1):
