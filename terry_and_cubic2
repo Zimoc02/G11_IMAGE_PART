@@ -25,6 +25,7 @@ def send_two_points_16bit(x1, y1, x2, y2):
 
 # 参数
 INTERPOLATION_COUNT = 2
+headidx = 5
 lower_red_1 = np.array([0, 100, 50])
 upper_red_1 = np.array([10, 255, 255])
 lower_red_2 = np.array([170, 100, 50])
@@ -200,7 +201,7 @@ while True:
         if refined_path:
             distances = [calculate_distance(red_center, pt) for pt in refined_path]
             nearest_idx = int(np.argmin(distances))
-            target_idx = nearest_idx + 3
+            target_idx = nearest_idx + headidx
             if target_idx < len(refined_path):
                 target_point = refined_path[target_idx]
 
