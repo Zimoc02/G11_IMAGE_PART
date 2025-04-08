@@ -52,6 +52,9 @@ lower_black = np.array([0, 0, 0])
 upper_black = np.array([180, 255, 50])
 last_send_time = 0  # 全局变量，记录上次发送的时间戳
 SEND_INTERVAL = 0.04  # 发送间隔 50 毫秒
+errors = []  # 用于保存每帧的误差值
+timestamps = []  # 保存每帧的时间戳
+history_points = deque(maxlen=300)  # 红球历史坐标，用于画轨迹
 
 x__1 = 0
 x__2 = 0
@@ -258,10 +261,18 @@ while True:
                                 (255, 0, 255), 2, tipLength=0.3)
                 
                 
-                error1 = (x__2 - red_center[1])/ 1280 * 100
-                error2 = (y__2 - red_center[0])/ 720 * 100
-                print(f"acc: {error1}, {error2}")
-                print(error1,error2)
+                nearest_path_point = refined_path[nearest_idx]
+                euclidean_error = calculate_distance(red_center, nearest_path_point)
+
+                # 保存误差与时间
+                errors.append(euclidean_error)
+                timestamps.append(time.time())
+                history_points.append(red_center)  # 添加到历史轨迹中
+
+                # 每 30 帧打印统计
+                if len(errors) % 30 == 0:
+                    print(f"[误差统计] 平均: {np.mean(errors):.2f} px, 最大: {np.max(errors):.2f} px, 标准差: {np.std(errors):.2f} px")
+
                 send_two_points_16bit(red_center[1], red_center[0], target_point[1], target_point[0])
                 
                 x__1 = red_center[1]
