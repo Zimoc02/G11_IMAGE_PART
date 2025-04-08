@@ -191,7 +191,30 @@ while True:
     display = cv2.addWeighted(path_overlay, 0.6, frame, 0.4, 0)
 
     if red_center:
-        cv2.circle(display, (red_center[1], red_center[0]), 8, (0, 255, 255), 2)
+        # 当前红球位置：红色圆圈
+        cv2.circle(display, (red_center[1], red_center[0]), 8, (0, 0, 255), -1)
+        cv2.putText(display, "Current", (red_center[1] + 10, red_center[0] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+
+        # 查找 refined_path 中最接近 red_center 的点，然后+3个点
+        if refined_path:
+            distances = [calculate_distance(red_center, pt) for pt in refined_path]
+            nearest_idx = int(np.argmin(distances))
+            target_idx = nearest_idx + 3
+            if target_idx < len(refined_path):
+                target_point = refined_path[target_idx]
+
+                # 目标点：紫色圆圈
+                cv2.circle(display, (target_point[1], target_point[0]), 8, (255, 0, 255), -1)
+                cv2.putText(display, "Target", (target_point[1] + 10, target_point[0] - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
+
+                # 画箭头：从当前红球指向目标点（紫色箭头）
+                cv2.arrowedLine(display,
+                                (red_center[1], red_center[0]),
+                                (target_point[1], target_point[0]),
+                                (255, 0, 255), 2, tipLength=0.3)
+
 
     cv2.imshow("Red Ball Tracking", display)
 
