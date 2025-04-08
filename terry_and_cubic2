@@ -60,29 +60,59 @@ def generate_path_overlay(image):
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 50, 150)
     contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    
     selected_path_image = np.zeros_like(image)
+
     for cnt in contours:
         area = cv2.contourArea(cnt)
         perimeter = cv2.arcLength(cnt, True)
-        if 50 < area < 5000 and perimeter > 80:
+
+        # === 洞口过滤逻辑 ===
+        if area > 2000:  # 跳过太大的区域，避免识别到洞
+            continue
+        if cv2.isContourConvex(cnt):  # 跳过闭合环
+            continue
+
+        if 50 < area < 2000 and perimeter > 80:
             approx = cv2.approxPolyDP(cnt, 0.02 * perimeter, True)
             if len(approx) > 5:
                 cv2.drawContours(selected_path_image, [cnt], -1, (255, 255, 255), 2)
 
+    # 骨架提取
     gray_selected = cv2.cvtColor(selected_path_image, cv2.COLOR_BGR2GRAY)
     _, binary = cv2.threshold(gray_selected, 127, 255, cv2.THRESH_BINARY)
     skeleton = cv2.ximgproc.thinning(binary)
     non_zero_points = np.column_stack(np.where(skeleton > 0))
 
-    if len(non_zero_points) == 0:
-        print("⚠️ 无骨架点")
-        return image.copy(), (0, 0), []
+    # 红球检测
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    red_mask = cv2.bitwise_or(
+        cv2.inRange(hsv, lower_red_1, upper_red_1),
+        cv2.inRange(hsv, lower_red_2, upper_red_2)
+    )
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    center_yx = np.array([image.shape[0] // 2, image.shape[1] // 2])
-    distances = np.linalg.norm(non_zero_points - center_yx, axis=1)
-    nearest_idx = np.argmin(distances)
-    red_center = tuple(non_zero_points[nearest_idx])
+    red_center = None
+    max_area = 0
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > 100 and area > max_area:
+            x, y, w, h = cv2.boundingRect(cnt)
+            red_center = (y + h // 2, x + w // 2)
+            max_area = area
 
+    # fallback 起点：若未识别红球，则使用图像中心最近的骨架点
+    if red_center is None:
+        print("⚠️ 未检测到红球，自动使用路径骨架上的点作为起点")
+        if len(non_zero_points) == 0:
+            return image.copy(), None, []
+        center_yx = np.array([image.shape[0] // 2, image.shape[1] // 2])
+        distances = np.linalg.norm(non_zero_points - center_yx, axis=1)
+        nearest_idx = np.argmin(distances)
+        red_center = tuple(non_zero_points[nearest_idx])
+
+    # 稀疏化骨架点
     kdtree = cKDTree(non_zero_points)
     placed_points, used_indices = [], set()
     for idx, point in enumerate(non_zero_points):
@@ -91,11 +121,13 @@ def generate_path_overlay(image):
             used_indices.update(kdtree.query_ball_point(point, r=15))
     placed_points = np.array(placed_points)
 
+    # 从红球起点出发构建有序路径
     all_points = placed_points.tolist()
     ordered_path = [red_center]
     used = set()
     current_point = red_center
     kdtree_path = cKDTree(all_points)
+
     while True:
         distances, indices = kdtree_path.query(current_point, k=len(all_points))
         next_point = None
@@ -110,6 +142,7 @@ def generate_path_overlay(image):
         used.add(next_point)
         current_point = next_point
 
+    # 插值生成 refined_path
     refined_path = []
     for i in range(len(ordered_path) - 1):
         p1 = np.array(ordered_path[i])
@@ -121,12 +154,14 @@ def generate_path_overlay(image):
             refined_path.append(new_point)
     refined_path.append(tuple(ordered_path[-1]))
 
+    # 可视化路径图层
     overlay = image.copy()
     for i in range(len(refined_path) - 1):
         cv2.line(overlay, (refined_path[i][1], refined_path[i][0]),
                           (refined_path[i + 1][1], refined_path[i + 1][0]), (0, 255, 255), 1)
 
     return overlay, red_center, refined_path
+
 
 # 摄像头启动
 pipeline = (
