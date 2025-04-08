@@ -215,6 +215,7 @@ while True:
                                 (red_center[1], red_center[0]),
                                 (target_point[1], target_point[0]),
                                 (255, 0, 255), 2, tipLength=0.3)
+                send_two_points_16bit(red_center[1], red_center[0], target_point[1], target_point[0])
 
 
     cv2.imshow("Red Ball Tracking", display)
