@@ -64,6 +64,27 @@ def detect_board_corners(frame):
                 sorted_corners[marker_id] = corners[i].reshape(4, 2).mean(axis=0).astype(int)
         return np.array(sorted_corners)
     return None
+# 实时识别红球位置
+def detect_red_ball(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    red_mask = cv2.bitwise_or(
+        cv2.inRange(hsv, lower_red_1, upper_red_1),
+        cv2.inRange(hsv, lower_red_2, upper_red_2)
+    )
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    red_center = None
+    max_area = 0
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > 100 and area > max_area:
+            x, y, w, h = cv2.boundingRect(cnt)
+            red_center = (y + h // 2, x + w // 2)
+            max_area = area
+    return red_center
+
+def calculate_distance(pt1, pt2):
+    return math.hypot(pt1[0] - pt2[0], pt1[1] - pt2[1])
 
 # 路径图层函数
 def generate_path_overlay(image):
