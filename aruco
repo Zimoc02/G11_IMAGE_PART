@@ -37,7 +37,7 @@ def send_two_points_16bit(x1, y1, x2, y2):
     except Exception as e:
         print(f"I2C Send Error: {e}")
 
-# Parameters (Added ArUco-related variables) +++
+# Parameters
 INTERPOLATION_COUNT = 2
 headidx = 30
 lower_red_1 = np.array([0, 100, 50])
@@ -49,21 +49,55 @@ SEND_INTERVAL = 0.04
 errors = []
 timestamps = []
 history_points = deque(maxlen=300)
-ref_pts = None  # +++ Stores reference board corners
-H_inv = None    # +++ Current homography matrix
+ref_pts = None
+H_inv = None
+roi_dict = {}
+ROI_MARGIN = 80
 
-# +++ ArUco Marker Detection Function
-def detect_board_corners(frame):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    corners, ids, _ = aruco.detectMarkers(gray, ARUCO_DICT, parameters=ARUCO_PARAMS)
-    
-    if ids is not None and len(ids) == 4:  # Require all 4 markers
-        sorted_corners = [None] * 4
-        for i, marker_id in enumerate(ids.flatten()):
-            if 0 <= marker_id <= 3:  # Assuming markers are labeled 0-3
-                sorted_corners[marker_id] = corners[i].reshape(4, 2).mean(axis=0).astype(int)
-        return np.array(sorted_corners)
-    return None
+# Camera Initialization
+pipeline = "v4l2src device=/dev/video0 ! image/jpeg,width=1280,height=720,framerate=60/1 ! jpegdec ! videoconvert ! appsink"
+video_capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+if not video_capture.isOpened():
+    print("Error: Camera not opened")
+    exit()
+
+# +++ Initial Frame Marker Detection +++
+ret, initial_frame = video_capture.read()
+if not ret:
+    print("Error: Initial frame not captured")
+    exit()
+
+gray_init = cv2.cvtColor(initial_frame, cv2.COLOR_BGR2GRAY)
+corners, ids, _ = aruco.detectMarkers(gray_init, ARUCO_DICT, parameters=ARUCO_PARAMS)
+
+sorted_corners = [None] * 4
+if ids is not None:
+    for i, marker_id in enumerate(ids.flatten()):
+        if 0 <= marker_id <= 3:
+            pts = corners[i][0]
+            cx = int(np.mean(pts[:, 0]))
+            cy = int(np.mean(pts[:, 1]))
+            x1 = max(0, cx - ROI_MARGIN)
+            y1 = max(0, cy - ROI_MARGIN)
+            x2 = min(initial_frame.shape[1], cx + ROI_MARGIN)
+            y2 = min(initial_frame.shape[0], cy + ROI_MARGIN)
+            roi_dict[marker_id] = (x1, y1, x2, y2)
+            sorted_corners[marker_id] = (cx, cy)
+else:
+    print("❌ 没有检测到 ArUco markers (0~3)")
+    exit()
+
+if None in sorted_corners:
+    print("❌ 有 marker 没识别到，初始定位失败")
+    exit()
+
+initial_corners = np.array(sorted_corners, dtype=np.float32)
+h, w = initial_frame.shape[:2]
+ref_pts = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
+
+# 下面是路径生成和主循环（保持你的原始逻辑即可）
+
+
 # 实时识别红球位置
 def detect_red_ball(frame):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
