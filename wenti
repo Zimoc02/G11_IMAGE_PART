@@ -1,7 +1,13 @@
-  File "/home/teyoung/vid10006.py", line 234, in <module>
-    frame = cv2.addWeighted(path_overlay, 0.6, frame, 0.4, 0)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-cv2.error: OpenCV(4.6.0) :-1: error: (-5:Bad argument) in function 'addWeighted'
-> Overload resolution failed:
->  - src1 is not a numerical tuple
->  - Expected Ptr<cv::UMat> for argument 'src1'
+teyoung@teyoung:~ $ python3 ARUCO.py
+[ WARN:0@2.814] global ./modules/videoio/src/cap_gstreamer.cpp (1405) open OpenCV | GStreamer warning: Cannot query video position: status=0, value=-1, duration=-1
+QStandardPaths: wrong permissions on runtime directory /run/user/1000, 0770 instead of 0700
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+Traceback (most recent call last):
+  File "/home/teyoung/ARUCO.py", line 45, in <module>
+    aruco.drawDetectedMarkers(frame, [abs_corners], np.array([marker_id]))
+cv2.error: OpenCV(4.6.0) ./contrib/modules/aruco/src/aruco.cpp:1715: error: (-215:Assertion failed) currentMarker.total() == 4 && currentMarker.type() == CV_32FC2 in function 'drawDetectedMarkers'
+
