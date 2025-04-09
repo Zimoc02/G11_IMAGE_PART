@@ -1,0 +1,162 @@
+import cv2
+import numpy as np
+import math
+import smbus
+from collections import deque
+from scipy.spatial import cKDTree
+from scipy.interpolate import splprep, splev
+import time
+from cv2 import aruco  # +++ Added ArUco import
+
+# +++ ArUco Parameters 
+ARUCO_DICT = aruco.Dictionary_get(aruco.DICT_4X4_50)  # 4x4_50 dictionary
+ARUCO_PARAMS = aruco.DetectorParameters_create()
+
+# I2C Setup
+bus = smbus.SMBus(1)
+arduino_address = 0x08
+
+def int16_to_bytes(val):
+    val = int(val)
+    if val < 0:
+        val = (1 << 16) + val
+    return [(val >> 8) & 0xFF, val & 0xFF]
+
+def send_two_points_16bit(x1, y1, x2, y2):
+    global last_send_time
+    now = time.time()
+    if now - last_send_time < SEND_INTERVAL:
+        print(f"time out")
+        return
+    last_send_time = now
+
+    data = int16_to_bytes(x1) + int16_to_bytes(y1) + int16_to_bytes(x2) + int16_to_bytes(y2)
+    try:
+        bus.write_i2c_block_data(arduino_address, 0x00, data)
+        print(f"Sent: ({x1}, {y1}) -> ({x2}, {y2})")
+    except Exception as e:
+        print(f"I2C Send Error: {e}")
+
+# Parameters (Added ArUco-related variables) +++
+INTERPOLATION_COUNT = 2
+headidx = 30
+lower_red_1 = np.array([0, 100, 50])
+upper_red_1 = np.array([10, 255, 255])
+lower_red_2 = np.array([170, 100, 50])
+upper_red_2 = np.array([180, 255, 255])
+last_send_time = 0
+SEND_INTERVAL = 0.04
+errors = []
+timestamps = []
+history_points = deque(maxlen=300)
+ref_pts = None  # +++ Stores reference board corners
+H_inv = None    # +++ Current homography matrix
+
+# +++ ArUco Marker Detection Function
+def detect_board_corners(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    corners, ids, _ = aruco.detectMarkers(gray, ARUCO_DICT, parameters=ARUCO_PARAMS)
+    
+    if ids is not None and len(ids) == 4:  # Require all 4 markers
+        sorted_corners = [None] * 4
+        for i, marker_id in enumerate(ids.flatten()):
+            if 0 <= marker_id <= 3:  # Assuming markers are labeled 0-3
+                sorted_corners[marker_id] = corners[i].reshape(4, 2).mean(axis=0).astype(int)
+        return np.array(sorted_corners)
+    return None
+
+# Original Path Generation Function (No changes)
+def generate_path_overlay(image):
+    # ... (Keep your original function code unchanged) ...
+
+# Camera Initialization (Added ArUco setup) +++
+pipeline = "v4l2src device=/dev/video0 ! image/jpeg,width=1280,height=720,framerate=60/1 ! jpegdec ! videoconvert ! appsink"
+video_capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+if not video_capture.isOpened():
+    print("Error: Camera not opened")
+    exit()
+
+# +++ Initial Frame Marker Detection
+ret, initial_frame = video_capture.read()
+initial_corners = detect_board_corners(initial_frame)
+if initial_corners is None:
+    print("Error: Need 4 ArUco markers (IDs 0-3) in initial frame!")
+    exit()
+
+# Define reference points based on initial frame
+h, w = initial_frame.shape[:2]
+ref_pts = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
+
+# Generate initial path
+path_overlay, red_center, refined_path = generate_path_overlay(initial_frame)
+print(f"Initial path length: {len(refined_path)}")
+
+# Main Loop (Added Homography Calculation) +++
+while True:
+    ret, frame = video_capture.read()
+    if not ret:
+        break
+
+    # +++ Detect current ArUco markers
+    current_corners = detect_board_corners(frame)
+    
+    # +++ Compute homography if markers detected
+    if current_corners is not None:
+        H, _ = cv2.findHomography(current_corners.astype(np.float32), ref_pts, cv2.RANSAC)
+        H_inv = np.linalg.inv(H) if H is not None else np.eye(3)
+    else:
+        H_inv = np.eye(3)  # Identity matrix if no markers
+    
+    # +++ Warp path using homography
+    warped_path = []
+    if refined_path:
+        for pt in refined_path:
+            # Convert (y,x) to (x,y) for homography
+            px, py = pt[1], pt[0]
+            warped_pt = cv2.perspectiveTransform(
+                np.array([[[px, py]]], dtype=np.float32), H_inv).squeeze()
+            warped_path.append((int(warped_pt[1]), int(warped_pt[0])))  # Back to (y,x)
+
+    red_center = detect_red_ball(frame)
+    display = cv2.addWeighted(path_overlay, 0.6, frame, 0.4, 0)
+
+    if red_center:
+        current_path = warped_path if warped_path else refined_path  # Fallback
+        
+        if current_path:
+            distances = [calculate_distance(red_center, pt) for pt in current_path]
+            nearest_idx = int(np.argmin(distances))
+            target_idx = nearest_idx + headidx
+            
+            if target_idx < len(current_path):
+                target_point = current_path[target_idx]
+
+                # Visualization (original code)
+                cv2.circle(display, (target_point[1], target_point[0]), 8, (255, 0, 255), -1)
+                cv2.arrowedLine(display, (red_center[1], red_center[0]),
+                               (target_point[1], target_point[0]), (255, 0, 255), 2)
+
+                # Error tracking (original code)
+                nearest_path_point = current_path[nearest_idx]
+                euclidean_error = calculate_distance(red_center, nearest_path_point)
+                errors.append(euclidean_error)
+                timestamps.append(time.time())
+                history_points.append(red_center)
+
+                send_two_points_16bit(red_center[1], red_center[0],
+                                      target_point[1], target_point[0])
+
+    cv2.imshow("Red Ball Tracking", display)
+    
+    # Original key handling
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
+        break
+    elif key == ord('p'):
+        ret, new_frame = video_capture.read()
+        if ret:
+            path_overlay, red_center, refined_path = generate_path_overlay(new_frame)
+            print("[P] Path regenerated")
+
+video_capture.release()
+cv2.destroyAllWindows()
