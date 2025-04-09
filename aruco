@@ -239,7 +239,29 @@ while True:
         break
 
     # +++ Detect current ArUco markers
+    # +++ Detect current ArUco markers and draw them
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    corners, ids, _ = aruco.detectMarkers(gray, ARUCO_DICT, parameters=ARUCO_PARAMS)
+
+    if ids is not None:
+        aruco.drawDetectedMarkers(frame, corners, ids)  # ✅ 画出所有 marker 框
+
+        for i, marker_id in enumerate(ids.flatten()):
+            pts = corners[i][0]
+            cx = int(np.mean(pts[:, 0]))
+            cy = int(np.mean(pts[:, 1]))
+            cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
+            cv2.putText(frame, f"ID: {marker_id}", (cx + 10, cy - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+    # 继续原来的处理逻辑（如 homography 变换）
     current_corners = detect_board_corners(frame)
+    if current_corners is not None:
+        H, _ = cv2.findHomography(current_corners.astype(np.float32), ref_pts, cv2.RANSAC)
+        H_inv = np.linalg.inv(H) if H is not None else np.eye(3)
+    else:
+        H_inv = np.eye(3)
+
     
     # +++ Compute homography if markers detected
     if current_corners is not None:
