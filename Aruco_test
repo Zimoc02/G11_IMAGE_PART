@@ -1,0 +1,54 @@
+import cv2
+import numpy as np
+from cv2 import aruco
+
+# ==== ArUco 设置 ====
+ARUCO_DICT = aruco.Dictionary_get(aruco.DICT_4X4_50)
+ARUCO_PARAMS = aruco.DetectorParameters_create()
+
+# ==== 摄像头初始化 ====
+cap = cv2.VideoCapture(0)  # 用你的默认摄像头，如果是树莓派可以改为 GStreamer 管道
+if not cap.isOpened():
+    print("摄像头无法打开")
+    exit()
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    # ==== 灰度转换 + ArUco 检测 ====
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    corners, ids, _ = aruco.detectMarkers(gray, ARUCO_DICT, parameters=ARUCO_PARAMS)
+
+    # ==== 检测到了 marker ====
+    if ids is not None:
+        for i, marker_id in enumerate(ids.flatten()):
+            if 0 <= marker_id <= 3:
+                # 画出每个 marker 的边框
+                aruco.drawDetectedMarkers(frame, [corners[i]], np.array([marker_id]))
+                
+                # 计算 marker 中心
+                pts = corners[i][0]
+                center_x = int(np.mean(pts[:, 0]))
+                center_y = int(np.mean(pts[:, 1]))
+
+                # 标记 ID 和坐标
+                cv2.circle(frame, (center_x, center_y), 4, (0, 255, 0), -1)
+                cv2.putText(frame, f"ID: {marker_id}", (center_x + 10, center_y - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+    else:
+        cv2.putText(frame, "No ArUco markers found", (30, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+    # 显示图像
+    cv2.imshow("ArUco Detection (ID 0~3)", frame)
+
+    # 按 q 键退出
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
