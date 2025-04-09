@@ -2,86 +2,48 @@ import cv2
 import numpy as np
 from cv2 import aruco
 
-# ==== ArUco 设置 ====
+# === ArUco 设置 ===
 ARUCO_DICT = aruco.Dictionary_get(aruco.DICT_4X4_50)
 ARUCO_PARAMS = aruco.DetectorParameters_create()
-ARUCO_PARAMS.cornerRefinementMethod = aruco.CORNER_REFINE_SUBPIX
-ARUCO_PARAMS.adaptiveThreshWinSizeMin = 3
-ARUCO_PARAMS.adaptiveThreshWinSizeMax = 23
-ARUCO_PARAMS.adaptiveThreshWinSizeStep = 10
 
-
-# ==== 摄像头初始化 ====
+# === 摄像头初始化 ===
 cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)  # 可选：提高分辨率
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
 if not cap.isOpened():
-    print("摄像头无法打开")
+    print("无法打开摄像头")
     exit()
 
-# ==== 拍一张初始照片 ====
-print("📸 正在拍摄初始帧识别 ArUco...")
-ret, init_frame = cap.read()
-if not ret:
-    print("❌ 拍照失败")
-    exit()
-
-gray_init = cv2.cvtColor(init_frame, cv2.COLOR_BGR2GRAY)
-corners, ids, _ = aruco.detectMarkers(gray_init, ARUCO_DICT, parameters=ARUCO_PARAMS)
-
-roi_dict = {}  # 存储每个 ID 的 ROI 区域 (x1, y1, x2, y2)
-ROI_MARGIN = 80  # ROI 区域大小扩展量（上下左右各扩展）
-
-if ids is not None:
-    for i, marker_id in enumerate(ids.flatten()):
-        if 0 <= marker_id <= 3:
-            pts = corners[i][0]
-            cx = int(np.mean(pts[:, 0]))
-            cy = int(np.mean(pts[:, 1]))
-            x1 = max(0, cx - ROI_MARGIN)
-            y1 = max(0, cy - ROI_MARGIN)
-            x2 = min(init_frame.shape[1], cx + ROI_MARGIN)
-            y2 = min(init_frame.shape[0], cy + ROI_MARGIN)
-            roi_dict[marker_id] = (x1, y1, x2, y2)
-else:
-    print("❌ 没有检测到任何 ArUco marker (0~3)")
-    exit()
-
-print(f"✅ 初始识别完成，检测到 {len(roi_dict)} 个 marker。")
-
-# ==== 实时处理视频帧 ====
 while True:
     ret, frame = cap.read()
     if not ret:
         break
 
-    # ==== 遍历每个 ROI，检测特定 ID ====
-    for marker_id in range(4):
-        if marker_id not in roi_dict:
-            continue
-        x1, y1, x2, y2 = roi_dict[marker_id]
-        roi_gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
-        roi_corners, roi_ids, _ = aruco.detectMarkers(roi_gray, ARUCO_DICT, parameters=ARUCO_PARAMS)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        if roi_ids is not None:
-            for i, detected_id in enumerate(roi_ids.flatten()):
-                if detected_id == marker_id:
-                    abs_corners = roi_corners[i].astype(np.float32) + np.array([[[x1, y1]]], dtype=np.float32)
-                    aruco.drawDetectedMarkers(frame, [abs_corners], np.array([detected_id]))
+    # === 检测 ArUco marker ===
+    corners, ids, _ = aruco.detectMarkers(gray, ARUCO_DICT, parameters=ARUCO_PARAMS)
 
-                    pts = abs_corners[0]
-                    cx = int(np.mean(pts[:, 0]))
-                    cy = int(np.mean(pts[:, 1]))
-                    cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
-                    cv2.putText(frame, f"ID: {detected_id}", (cx + 10, cy - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    if ids is not None:
+        # 在图像上绘制 marker 框和 ID
+        aruco.drawDetectedMarkers(frame, corners, ids)
+        for i, marker_id in enumerate(ids.flatten()):
+            pts = corners[i][0]
+            cx = int(np.mean(pts[:, 0]))
+            cy = int(np.mean(pts[:, 1]))
+            cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
+            cv2.putText(frame, f"ID: {marker_id}", (cx + 10, cy - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    else:
+        cv2.putText(frame, "No marker detected", (20, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-        # 画 ROI 辅助框
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 0), 1)
+    # 显示画面
+    cv2.imshow("Single ArUco Marker Test", frame)
 
-    # 显示缩放画面
-    resized = cv2.resize(frame, (640, 360))
-    cv2.imshow("Fast ArUco Tracking (ROI Based)", resized)
-
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
         break
 
 cap.release()
