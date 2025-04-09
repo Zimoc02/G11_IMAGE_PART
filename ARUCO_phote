@@ -5,6 +5,11 @@ from cv2 import aruco
 # ==== ArUco 设置 ====
 ARUCO_DICT = aruco.Dictionary_get(aruco.DICT_4X4_50)
 ARUCO_PARAMS = aruco.DetectorParameters_create()
+ARUCO_PARAMS.cornerRefinementMethod = aruco.CORNER_REFINE_SUBPIX
+ARUCO_PARAMS.adaptiveThreshWinSizeMin = 3
+ARUCO_PARAMS.adaptiveThreshWinSizeMax = 23
+ARUCO_PARAMS.adaptiveThreshWinSizeStep = 10
+
 
 # ==== 摄像头初始化 ====
 cap = cv2.VideoCapture(0)
