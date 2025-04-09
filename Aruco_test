@@ -39,7 +39,7 @@ while True:
                     # 偏移到原图坐标系
                     offset_x = 0 if expected_id in [0, 3] else w - roi_size
                     offset_y = 0 if expected_id in [0, 1] else h - roi_size
-                    abs_corners = roi_corners[i] + np.array([[[offset_x, offset_y]]])
+                    abs_corners = roi_corners[i].astype(np.float32) + np.array([[[offset_x, offset_y]]], dtype=np.float32)
                     
                     # 绘制 marker 框和 ID
                     aruco.drawDetectedMarkers(frame, [abs_corners], np.array([marker_id]))
