@@ -73,57 +73,6 @@ roi_dict = {}
 ROI_MARGIN = 80
 aruco_roi_bounds = None  
 
-
-# Camera Initialization
-pipeline = "v4l2src device=/dev/video0 ! image/jpeg,width=1280,height=720,framerate=60/1 ! jpegdec ! videoconvert ! appsink"
-video_capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-if not video_capture.isOpened():
-    print("Error: Camera not opened")
-    exit()
-
-# +++ Initial Frame Marker Detection +++
-ret, initial_frame = video_capture.read()
-if not ret:
-    print("Error: Initial frame not captured")
-    exit()
-
-aruco_roi_bounds, corners, ids = detect_aruco_and_get_roi(initial_frame)
-if ids is None or len(ids) < 4:
-    print("❌ 初始帧未检测到足够的 ArUco markers (0~3)")
-    exit()
-
-# 计算四个角的中心点（根据 ID 0~3）
-sorted_corners = [None] * 4
-for i, marker_id in enumerate(ids.flatten()):
-    if 0 <= marker_id <= 3:
-        pts = corners[i][0]
-        cx = int(np.mean(pts[:, 0]))
-        cy = int(np.mean(pts[:, 1]))
-        sorted_corners[marker_id] = (cx, cy)
-
-if None in sorted_corners:
-    print("❌ 四个角标识不全")
-    exit()
-
-initial_corners = np.array(sorted_corners, dtype=np.float32)
-
-# 设置参考坐标（以中心为0,0）
-center_x = np.mean(initial_corners[:, 0])
-center_y = np.mean(initial_corners[:, 1])
-width = (np.linalg.norm(initial_corners[1] - initial_corners[0]) +
-         np.linalg.norm(initial_corners[2] - initial_corners[3])) / 2
-height = (np.linalg.norm(initial_corners[3] - initial_corners[0]) +
-          np.linalg.norm(initial_corners[2] - initial_corners[1])) / 2
-ref_pts = np.array([
-    [-width / 2, -height / 2],
-    [ width / 2, -height / 2],
-    [ width / 2,  height / 2],
-    [-width / 2,  height / 2],
-], dtype=np.float32)
-
-H, _ = cv2.findHomography(initial_corners, ref_pts)
-print("✅ Homography 初始化完成，坐标原点设为棋盘中心")
-
 # 下面是路径生成和主循环（保持你的原始逻辑即可）
 
 
@@ -302,17 +251,53 @@ def detect_aruco_in_roi(frame, roi_bounds):
             corner += np.array([[[x_min, y_min]]])  # 还原到全图坐标
     return corners, ids
 
-
-# +++ Initial Frame Marker Detection
-ret, initial_frame = video_capture.read()
-initial_corners = detect_board_corners(initial_frame)
-if initial_corners is None:
-    print("Error: Need 4 ArUco markers (IDs 0-3) in initial frame!")
+# Camera Initialization
+pipeline = "v4l2src device=/dev/video0 ! image/jpeg,width=1280,height=720,framerate=60/1 ! jpegdec ! videoconvert ! appsink"
+video_capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+if not video_capture.isOpened():
+    print("Error: Camera not opened")
     exit()
 
-# Define reference points based on initial frame
-h, w = initial_frame.shape[:2]
-ref_pts = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
+# +++ Initial Frame Marker Detection +++
+ret, initial_frame = video_capture.read()
+if not ret:
+    print("Error: Initial frame not captured")
+    exit()
+
+aruco_roi_bounds, corners, ids = detect_aruco_and_get_roi(initial_frame)
+if ids is None or len(ids) < 4:
+    print("❌ 初始帧未检测到足够的 ArUco markers (0~3)")
+    exit()
+
+# 计算四个角的中心点（根据 ID 0~3）
+sorted_corners = [None] * 4
+for i, marker_id in enumerate(ids.flatten()):
+    if 0 <= marker_id <= 3:
+        pts = corners[i][0]
+        cx = int(np.mean(pts[:, 0]))
+        cy = int(np.mean(pts[:, 1]))
+        sorted_corners[marker_id] = (cx, cy)
+
+if None in sorted_corners:
+    print("❌ 四个角标识不全")
+    exit()
+
+initial_corners = np.array(sorted_corners, dtype=np.float32)
+
+# 设置参考点，坐标系以中心为原点
+width = (np.linalg.norm(initial_corners[1] - initial_corners[0]) +
+         np.linalg.norm(initial_corners[2] - initial_corners[3])) / 2
+height = (np.linalg.norm(initial_corners[3] - initial_corners[0]) +
+          np.linalg.norm(initial_corners[2] - initial_corners[1])) / 2
+ref_pts = np.array([
+    [-width / 2, -height / 2],
+    [ width / 2, -height / 2],
+    [ width / 2,  height / 2],
+    [-width / 2,  height / 2],
+], dtype=np.float32)
+
+H, _ = cv2.findHomography(initial_corners, ref_pts)
+print("✅ Homography 初始化完成，坐标原点设为棋盘中心")
 
 # Generate initial path
 path_overlay, red_center, refined_path = generate_path_overlay(initial_frame)
@@ -323,7 +308,6 @@ while True:
     ret, frame = video_capture.read()
     if not ret:
         break
-    frame = cv2.resize(frame, (frame_width, frame_height))
     overlay, red_center, refined_path = generate_path_overlay(frame)
 
     # 🧠 红球位置转换到棋盘坐标系
@@ -333,20 +317,17 @@ while True:
         cv2.putText(overlay, f"Board Pos: ({board_x:.0f}, {board_y:.0f})",
                     (red_center[1]+10, red_center[0]-10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-    # +++ Detect current ArUco markers
+
     # +++ Detect current ArUco markers and draw them
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    corners, ids, _ = aruco.detectMarkers(gray, ARUCO_DICT, parameters=ARUCO_PARAMS)
 
 # 使用 ROI 加速 ArUco 检测
-if aruco_roi_bounds is not None:
-    corners, ids = detect_aruco_in_roi(frame, aruco_roi_bounds)
-else:
-    corners, ids, _ = aruco.detectMarkers(frame, ARUCO_DICT, parameters=ARUCO_PARAMS)
+    if aruco_roi_bounds is not None:
+        corners, ids = detect_aruco_in_roi(frame, aruco_roi_bounds)
+    else:
+        corners, ids, _ = aruco.detectMarkers(frame, ARUCO_DICT, parameters=ARUCO_PARAMS)
 
     if ids is not None:
         aruco.drawDetectedMarkers(frame, corners, ids)
-
         sorted_corners = [None] * 4
         for i, marker_id in enumerate(ids.flatten()):
             if 0 <= marker_id <= 3:
