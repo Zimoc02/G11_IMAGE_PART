@@ -305,6 +305,10 @@ while True:
                 y__2 = target_point[0]
                 
     cv2.imshow("Red Ball Tracking", display)
+    # ✅ 加在这里，显示实时误差
+    if errors:
+        current_error = errors[-1]
+        cv2.putText(display, f"Error: {int(current_error)} px", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
