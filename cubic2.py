@@ -102,7 +102,7 @@ def generate_path_overlay(image):
         if cv2.isContourConvex(cnt):  # 跳过闭合环
             continue
 
-        if 50 < area < 2000 and perimeter > 80:
+        if 50 < area < 1500 and perimeter > 80:
             approx = cv2.approxPolyDP(cnt, 0.02 * perimeter, True)
             if len(approx) > 5:
                 cv2.drawContours(selected_path_image, [cnt], -1, (255, 255, 255), 2)
@@ -309,12 +309,12 @@ while True:
             else:
                 print("[热键T] 红球靠近路径尾部，无法获取目标点")
     elif key == ord('s'):
-    with open('tracking_accuracy.csv', 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(['Timestamp', 'Error(px)', 'Red_X', 'Red_Y', 'Nearest_X', 'Nearest_Y'])
-        for t, e, red_pt, path_pt in zip(timestamps, errors, history_points, refined_path[:len(errors)]):
-            writer.writerow([t, e, red_pt[1], red_pt[0], path_pt[1], path_pt[0]])
-    print("✅ [热键S] 已保存误差数据到 tracking_accuracy.csv")
+        with open('tracking_accuracy.csv', 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(['Timestamp', 'Error(px)', 'Red_X', 'Red_Y', 'Nearest_X', 'Nearest_Y'])
+            for t, e, red_pt, path_pt in zip(timestamps, errors, history_points, refined_path[:len(errors)]):
+                writer.writerow([t, e, red_pt[1], red_pt[0], path_pt[1], path_pt[0]])
+        print("✅ [热键S] 已保存误差数据到 tracking_accuracy.csv")
 
 video_capture.release()
 cv2.destroyAllWindows()
