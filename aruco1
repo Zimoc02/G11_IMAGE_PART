@@ -16,6 +16,24 @@ ARUCO_PARAMS = aruco.DetectorParameters_create()
 bus = smbus.SMBus(1)
 arduino_address = 0x08
 
+def detect_board_corners(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    corners, ids, _ = aruco.detectMarkers(gray, ARUCO_DICT, parameters=ARUCO_PARAMS)
+    
+    sorted_corners = [None] * 4
+    if ids is not None:
+        for i, marker_id in enumerate(ids.flatten()):
+            if 0 <= marker_id <= 3:
+                pts = corners[i][0]
+                cx = int(np.mean(pts[:, 0]))
+                cy = int(np.mean(pts[:, 1]))
+                sorted_corners[marker_id] = (cx, cy)
+    
+    if None in sorted_corners:
+        return None
+    return np.array(sorted_corners, dtype=np.float32)
+
+
 def int16_to_bytes(val):
     val = int(val)
     if val < 0:
