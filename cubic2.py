@@ -55,6 +55,7 @@ SEND_INTERVAL = 0.04  # 发送间隔 50 毫秒
 errors = []  # 用于保存每帧的误差值
 timestamps = []  # 保存每帧的时间戳
 history_points = deque(maxlen=300)  # 红球历史坐标，用于画轨迹
+nearest_points = []  # ✅ 新增记录最近路径点
 
 x__1 = 0
 x__2 = 0
@@ -116,7 +117,7 @@ def generate_path_overlay(image):
     non_zero_points = np.column_stack(np.where(skeleton > 0))
     '''
 
-    # 基于颜色的黑线掩膜提取路径（避免识别到洞）
+    # 基于颜色的黑线掩膜提取路径（避免识别到洞）    
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     black_mask = cv2.inRange(hsv, lower_black, upper_black)
     black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
@@ -124,7 +125,7 @@ def generate_path_overlay(image):
     # 骨架提取（黑线细化）
     skeleton = cv2.ximgproc.thinning(black_mask)
     non_zero_points = np.column_stack(np.where(skeleton > 0))
-    
+
     # 红球检测
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     red_mask = cv2.bitwise_or(
@@ -174,7 +175,8 @@ def generate_path_overlay(image):
         next_point = None
         for idx in indices:
             candidate = tuple(all_points[idx])
-            if candidate not in used and calculate_distance(current_point, candidate) < 65:
+            #if candidate not in used and calculate_distance(current_point, candidate) < 65:
+            if candidate not in used and calculate_distance(current_point, candidate) < 100:
                 next_point = candidate
                 break
         if next_point is None:
@@ -280,9 +282,11 @@ while True:
                     color = (0, 255 - err_clamped, err_clamped)  # 绿色 = 精确，红色 = 偏差大
                     cv2.circle(display, (pt[1], pt[0]), 2, color, -1)
                 '''
-                
+
                 nearest_path_point = refined_path[nearest_idx]
                 euclidean_error = calculate_distance(red_center, nearest_path_point)
+                nearest_points.append(nearest_path_point)
+                
 
                 # 保存误差与时间
                 errors.append(euclidean_error)
@@ -324,7 +328,7 @@ while True:
         with open('tracking_accuracy.csv', 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(['Timestamp', 'Error(px)', 'Red_X', 'Red_Y', 'Nearest_X', 'Nearest_Y'])
-            for t, e, red_pt, path_pt in zip(timestamps, errors, history_points, refined_path[:len(errors)]):
+            for t, e, red_pt, path_pt in zip(timestamps, errors, history_points, nearest_points):
                 writer.writerow([t, e, red_pt[1], red_pt[0], path_pt[1], path_pt[0]])
         print("✅ [热键S] 已保存误差数据到 tracking_accuracy.csv")
 
