@@ -6,7 +6,7 @@ from collections import deque
 from scipy.spatial import cKDTree
 from scipy.interpolate import splprep, splev
 import time  # 加在最顶部和其他 import 放一起
-
+import csv
 
 # I2C 设置
 bus = smbus.SMBus(1)
@@ -308,6 +308,13 @@ while True:
                 print(f"[热键T] 当前红球位置: {red_center}，目标点: {target_point}")
             else:
                 print("[热键T] 红球靠近路径尾部，无法获取目标点")
+    elif key == ord('s'):
+    with open('tracking_accuracy.csv', 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['Timestamp', 'Error(px)'])
+        for t, e in zip(timestamps, errors):
+            writer.writerow([t, e])
+    print("✅ [热键S] 已保存误差数据到 tracking_accuracy.csv")
 
 video_capture.release()
 cv2.destroyAllWindows()
