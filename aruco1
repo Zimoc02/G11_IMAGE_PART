@@ -231,15 +231,20 @@ def image_to_board_coords(point, H):
     board_pt /= board_pt[2]
     return float(board_pt[0]), float(board_pt[1])  # 返回 (X, Y)
 
-def detect_aruco_and_get_roi(frame, margin=50):
+def detect_aruco_and_get_roi(frame, margin=100):
     corners, ids, _ = aruco.detectMarkers(frame, ARUCO_DICT, parameters=ARUCO_PARAMS)
-    if ids is not None and len(ids) >= 4:
-        all_corners = np.concatenate(corners, axis=1)  # 所有角点整合
-        x_min = max(0, int(np.min(all_corners[:, 0, 0])) - margin)
-        x_max = min(frame.shape[1], int(np.max(all_corners[:, 0, 0])) + margin)
-        y_min = max(0, int(np.min(all_corners[:, 0, 1])) - margin)
-        y_max = min(frame.shape[0], int(np.max(all_corners[:, 0, 1])) + margin)
-        return (x_min, x_max, y_min, y_max), corners, ids
+    if ids is not None:
+        selected_corners = []
+        for i, marker_id in enumerate(ids.flatten()):
+            if 0 <= marker_id <= 3:
+                selected_corners.append(corners[i])
+        if len(selected_corners) == 4:
+            all_corners = np.concatenate(selected_corners, axis=1)
+            x_min = max(0, int(np.min(all_corners[:, 0, 0])) - margin)
+            x_max = min(frame.shape[1], int(np.max(all_corners[:, 0, 0])) + margin)
+            y_min = max(0, int(np.min(all_corners[:, 0, 1])) - margin)
+            y_max = min(frame.shape[0], int(np.max(all_corners[:, 0, 1])) + margin)
+            return (x_min, x_max, y_min, y_max), selected_corners, np.array([[0], [1], [2], [3]])
     return None, None, None
 
 def detect_aruco_in_roi(frame, roi_bounds):
@@ -388,6 +393,11 @@ while True:
 
                 send_two_points_16bit(red_center[1], red_center[0],
                                       target_point[1], target_point[0])
+
+    # ✅ 可视化 ROI 检测框（debug 用）
+    if aruco_roi_bounds is not None:
+        x_min, x_max, y_min, y_max = aruco_roi_bounds
+        cv2.rectangle(display, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
 
     cv2.imshow("Red Ball Tracking", display)
     
