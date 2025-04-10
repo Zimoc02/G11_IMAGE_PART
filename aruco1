@@ -71,6 +71,8 @@ ref_pts = None
 H_inv = None
 roi_dict = {}
 ROI_MARGIN = 80
+aruco_roi_bounds = None  
+
 
 # Camera Initialization
 pipeline = "v4l2src device=/dev/video0 ! image/jpeg,width=1280,height=720,framerate=60/1 ! jpegdec ! videoconvert ! appsink"
@@ -85,46 +87,42 @@ if not ret:
     print("Error: Initial frame not captured")
     exit()
 
-gray_init = cv2.cvtColor(initial_frame, cv2.COLOR_BGR2GRAY)
-corners, ids, _ = aruco.detectMarkers(gray_init, ARUCO_DICT, parameters=ARUCO_PARAMS)
-
-sorted_corners = [None] * 4
-roi_dict = {}
-if ids is not None:
-    for i, marker_id in enumerate(ids.flatten()):
-        if 0 <= marker_id <= 3:
-            pts = corners[i][0]
-            cx = int(np.mean(pts[:, 0]))
-            cy = int(np.mean(pts[:, 1]))
-            x1 = max(0, cx - ROI_MARGIN)
-            y1 = max(0, cy - ROI_MARGIN)
-            x2 = min(initial_frame.shape[1], cx + ROI_MARGIN)
-            y2 = min(initial_frame.shape[0], cy + ROI_MARGIN)
-            roi_dict[marker_id] = (x1, y1, x2, y2)
-            sorted_corners[marker_id] = (cx, cy)
-else:
-    print("❌ 没有检测到 ArUco markers (0~3)")
+aruco_roi_bounds, corners, ids = detect_aruco_and_get_roi(initial_frame)
+if ids is None or len(ids) < 4:
+    print("❌ 初始帧未检测到足够的 ArUco markers (0~3)")
     exit()
 
+# 计算四个角的中心点（根据 ID 0~3）
+sorted_corners = [None] * 4
+for i, marker_id in enumerate(ids.flatten()):
+    if 0 <= marker_id <= 3:
+        pts = corners[i][0]
+        cx = int(np.mean(pts[:, 0]))
+        cy = int(np.mean(pts[:, 1]))
+        sorted_corners[marker_id] = (cx, cy)
+
 if None in sorted_corners:
-    print("❌ 有 marker 没识别到，初始定位失败")
+    print("❌ 四个角标识不全")
     exit()
 
 initial_corners = np.array(sorted_corners, dtype=np.float32)
+
+# 设置参考坐标（以中心为0,0）
 center_x = np.mean(initial_corners[:, 0])
 center_y = np.mean(initial_corners[:, 1])
-width = (np.linalg.norm(initial_corners[1] - initial_corners[0]) + np.linalg.norm(initial_corners[2] - initial_corners[3])) / 2
-height = (np.linalg.norm(initial_corners[3] - initial_corners[0]) + np.linalg.norm(initial_corners[2] - initial_corners[1])) / 2
+width = (np.linalg.norm(initial_corners[1] - initial_corners[0]) +
+         np.linalg.norm(initial_corners[2] - initial_corners[3])) / 2
+height = (np.linalg.norm(initial_corners[3] - initial_corners[0]) +
+          np.linalg.norm(initial_corners[2] - initial_corners[1])) / 2
 ref_pts = np.array([
-    [-width / 2, -height / 2],  # Top-left
-    [ width / 2, -height / 2],  # Top-right
-    [ width / 2,  height / 2],  # Bottom-right
-    [-width / 2,  height / 2],  # Bottom-left
+    [-width / 2, -height / 2],
+    [ width / 2, -height / 2],
+    [ width / 2,  height / 2],
+    [-width / 2,  height / 2],
 ], dtype=np.float32)
 
-# 计算单应矩阵 H
 H, _ = cv2.findHomography(initial_corners, ref_pts)
-print("✅ Homography 已成功计算，坐标系中心设置为棋盘中心 (0,0)")
+print("✅ Homography 初始化完成，坐标原点设为棋盘中心")
 
 # 下面是路径生成和主循环（保持你的原始逻辑即可）
 
@@ -284,6 +282,26 @@ def image_to_board_coords(point, H):
     board_pt /= board_pt[2]
     return float(board_pt[0]), float(board_pt[1])  # 返回 (X, Y)
 
+def detect_aruco_and_get_roi(frame, margin=50):
+    corners, ids, _ = aruco.detectMarkers(frame, ARUCO_DICT, parameters=ARUCO_PARAMS)
+    if ids is not None and len(ids) >= 4:
+        all_corners = np.concatenate(corners, axis=1)  # 所有角点整合
+        x_min = max(0, int(np.min(all_corners[:, 0, 0])) - margin)
+        x_max = min(frame.shape[1], int(np.max(all_corners[:, 0, 0])) + margin)
+        y_min = max(0, int(np.min(all_corners[:, 0, 1])) - margin)
+        y_max = min(frame.shape[0], int(np.max(all_corners[:, 0, 1])) + margin)
+        return (x_min, x_max, y_min, y_max), corners, ids
+    return None, None, None
+
+def detect_aruco_in_roi(frame, roi_bounds):
+    x_min, x_max, y_min, y_max = roi_bounds
+    roi = frame[y_min:y_max, x_min:x_max]
+    corners, ids, _ = aruco.detectMarkers(roi, ARUCO_DICT, parameters=ARUCO_PARAMS)
+    if ids is not None:
+        for corner in corners:
+            corner += np.array([[[x_min, y_min]]])  # 还原到全图坐标
+    return corners, ids
+
 
 # +++ Initial Frame Marker Detection
 ret, initial_frame = video_capture.read()
@@ -320,24 +338,35 @@ while True:
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, _ = aruco.detectMarkers(gray, ARUCO_DICT, parameters=ARUCO_PARAMS)
 
+# 使用 ROI 加速 ArUco 检测
+if aruco_roi_bounds is not None:
+    corners, ids = detect_aruco_in_roi(frame, aruco_roi_bounds)
+else:
+    corners, ids, _ = aruco.detectMarkers(frame, ARUCO_DICT, parameters=ARUCO_PARAMS)
+
     if ids is not None:
-        aruco.drawDetectedMarkers(frame, corners, ids)  # ✅ 画出所有 marker 框
+        aruco.drawDetectedMarkers(frame, corners, ids)
 
+        sorted_corners = [None] * 4
         for i, marker_id in enumerate(ids.flatten()):
-            pts = corners[i][0]
-            cx = int(np.mean(pts[:, 0]))
-            cy = int(np.mean(pts[:, 1]))
-            cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
-            cv2.putText(frame, f"ID: {marker_id}", (cx + 10, cy - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            if 0 <= marker_id <= 3:
+                pts = corners[i][0]
+                cx = int(np.mean(pts[:, 0]))
+                cy = int(np.mean(pts[:, 1]))
+                sorted_corners[marker_id] = (cx, cy)
+                cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
+                cv2.putText(frame, f"ID: {marker_id}", (cx + 10, cy - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-    # 继续原来的处理逻辑（如 homography 变换）
-    current_corners = detect_board_corners(frame)
-    if current_corners is not None:
-        H, _ = cv2.findHomography(current_corners.astype(np.float32), ref_pts, cv2.RANSAC)
-        H_inv = np.linalg.inv(H) if H is not None else np.eye(3)
+        if None not in sorted_corners:
+            current_corners = np.array(sorted_corners, dtype=np.float32)
+            H, _ = cv2.findHomography(current_corners, ref_pts)
+            H_inv = np.linalg.inv(H)
+        else:
+            H_inv = np.eye(3)
     else:
         H_inv = np.eye(3)
+
 
     
     # +++ Warp path using homography
