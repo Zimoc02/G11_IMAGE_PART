@@ -85,6 +85,7 @@ def calculate_distance(pt1, pt2):
 
 # 路径图层函数
 def generate_path_overlay(image):
+    '''
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 50, 150)
@@ -106,13 +107,24 @@ def generate_path_overlay(image):
             approx = cv2.approxPolyDP(cnt, 0.02 * perimeter, True)
             if len(approx) > 5:
                 cv2.drawContours(selected_path_image, [cnt], -1, (255, 255, 255), 2)
-
+    
+  
     # 骨架提取
     gray_selected = cv2.cvtColor(selected_path_image, cv2.COLOR_BGR2GRAY)
     _, binary = cv2.threshold(gray_selected, 127, 255, cv2.THRESH_BINARY)
     skeleton = cv2.ximgproc.thinning(binary)
     non_zero_points = np.column_stack(np.where(skeleton > 0))
+    '''
 
+    # 基于颜色的黑线掩膜提取路径（避免识别到洞）
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    black_mask = cv2.inRange(hsv, lower_black, upper_black)
+    black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+
+    # 骨架提取（黑线细化）
+    skeleton = cv2.ximgproc.thinning(black_mask)
+    non_zero_points = np.column_stack(np.where(skeleton > 0))
+    
     # 红球检测
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     red_mask = cv2.bitwise_or(
