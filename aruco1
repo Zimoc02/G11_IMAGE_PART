@@ -257,8 +257,9 @@ def detect_aruco_in_roi(frame, roi_bounds):
     return corners, ids
 
 # Camera Initialization
-pipeline = "v4l2src device=/dev/video0 ! image/jpeg,width=1280,height=720,framerate=60/1 ! jpegdec ! videoconvert ! appsink"
-video_capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+video_capture = cv2.VideoCapture(0)
+video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 if not video_capture.isOpened():
     print("Error: Camera not opened")
     exit()
