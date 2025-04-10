@@ -269,12 +269,14 @@ if not ret:
     print("Error: Initial frame not captured")
     exit()
 
-aruco_roi_bounds, corners, ids = detect_aruco_and_get_roi(initial_frame)
+gray_init = cv2.cvtColor(initial_frame, cv2.COLOR_BGR2GRAY)
+corners, ids, _ = aruco.detectMarkers(gray_init, ARUCO_DICT, parameters=ARUCO_PARAMS)
 if ids is None or len(ids) < 4:
     print("❌ 初始帧未检测到足够的 ArUco markers (0~3)")
     exit()
 
 # 计算四个角的中心点（根据 ID 0~3）
+selected_corners = []
 sorted_corners = [None] * 4
 for i, marker_id in enumerate(ids.flatten()):
     if 0 <= marker_id <= 3:
@@ -303,7 +305,17 @@ ref_pts = np.array([
 
 H, _ = cv2.findHomography(initial_corners, ref_pts)
 print("✅ Homography 初始化完成，坐标原点设为棋盘中心")
+aruco_roi_bounds = None
+if len(selected_corners) == 4:
+    all_corners = np.concatenate(selected_corners, axis=1)
+    margin = 80
+    x_min = max(0, int(np.min(all_corners[:, 0, 0])) - margin)
+    x_max = min(initial_frame.shape[1], int(np.max(all_corners[:, 0, 0])) + margin)
+    y_min = max(0, int(np.min(all_corners[:, 0, 1])) - margin)
+    y_max = min(initial_frame.shape[0], int(np.max(all_corners[:, 0, 1])) + margin)
+    aruco_roi_bounds = (x_min, x_max, y_min, y_max)
 
+print("✅ 初始 ArUco 四角检测完成，ROI 启用")
 # Generate initial path
 path_overlay, red_center, refined_path = generate_path_overlay(initial_frame)
 print(f"Initial path length: {len(refined_path)}")
@@ -326,10 +338,9 @@ while True:
     # +++ Detect current ArUco markers and draw them
 
 # 使用 ROI 加速 ArUco 检测
-    if aruco_roi_bounds is not None:
-        corners, ids = detect_aruco_in_roi(frame, aruco_roi_bounds)
-    else:
-        corners, ids, _ = aruco.detectMarkers(frame, ARUCO_DICT, parameters=ARUCO_PARAMS)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    corners, ids, _ = aruco.detectMarkers(gray, ARUCO_DICT, parameters=ARUCO_PARAMS)
+
 
     if ids is not None:
         aruco.drawDetectedMarkers(frame, corners, ids)
@@ -396,8 +407,10 @@ while True:
 
     # ✅ 可视化 ROI 检测框（debug 用）
     if aruco_roi_bounds is not None:
-        x_min, x_max, y_min, y_max = aruco_roi_bounds
-        cv2.rectangle(display, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
+        corners, ids = detect_aruco_in_roi(frame, aruco_roi_bounds)
+    else:
+        corners, ids, _ = aruco.detectMarkers(frame, ARUCO_DICT, parameters=ARUCO_PARAMS)
+
 
     cv2.imshow("Red Ball Tracking", display)
     
