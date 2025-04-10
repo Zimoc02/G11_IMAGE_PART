@@ -286,6 +286,7 @@ while True:
                 nearest_path_point = refined_path[nearest_idx]
                 euclidean_error = calculate_distance(red_center, nearest_path_point)
                 nearest_points.append(nearest_path_point)
+
                 
 
                 # 保存误差与时间
