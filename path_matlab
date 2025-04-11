@@ -1,0 +1,19 @@
+% 读取 CSV 文件
+data = readmatrix('real_world_path.csv');  % 或用 readtable, textscan 等
+
+% 提取 X 和 Y 坐标
+x = data(:, 1);
+y = data(:, 2);
+
+% 绘制路径图
+figure;
+plot(x, y, 'b-', 'LineWidth', 2);
+hold on;
+plot(x(1), y(1), 'go', 'MarkerSize', 8, 'DisplayName', '起点');
+plot(x(end), y(end), 'ro', 'MarkerSize', 8, 'DisplayName', '终点');
+xlabel('X 坐标 (cm)');
+ylabel('Y 坐标 (cm)');
+title('从摄像头映射到板面坐标系的路径');
+legend('路径', '起点', '终点');
+axis equal;
+grid on;
