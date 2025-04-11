@@ -338,6 +338,25 @@ def detect_aruco_and_update(frame):
             print(f"🔍 实时检测到 ArUco ID: {list(aruco_corners_dict.keys())}")
         else:
             print("⚠️ 实时未检测到任何 ArUco")
+def map_path_to_aruco_plane_coords(refined_path, H):
+    if H is None:
+        print("❌ H 矩阵为空，无法进行坐标映射")
+        return []
+
+    try:
+        # 构造路径点数组，注意图像坐标是 (y, x)，需要变为 (x, y)
+        path_array = np.array([[[p[1], p[0]]] for p in refined_path], dtype=np.float32)
+
+        # 透视变换
+        projected = cv2.perspectiveTransform(path_array, H)
+
+        # 提取结果
+        mapped_path = [tuple(pt[0]) for pt in projected]  # [(x1, y1), (x2, y2), ...]
+        return mapped_path
+
+    except Exception as e:
+        print(f"❌ 路径映射失败: {e}")
+        return []
 
 # 摄像头启动
 pipeline = (
@@ -364,13 +383,15 @@ get_aruco_centers(aruco_corners_dict)
     if H is not None:
         print("✅ Homography 矩阵计算完成")
         print(H)
+real_world_path = map_path_to_aruco_plane_coords(refined_path, H)
+'''
 #得到 H 后，在 refined_path 上做投影
 if H is not None:
     path_array = np.array(refined_path, dtype=np.float32)
     path_array = np.array([[[p[1], p[0]]] for p in refined_path], dtype=np.float32)  # 注意顺序：x, y
     projected_path = cv2.perspectiveTransform(path_array, H)
     real_world_path = [(float(p[0][0]), float(p[0][1])) for p in projected_path]  # 棋盘单位下的路径点
-
+'''
 while True:
     ret, frame = video_capture.read()
     if not ret:
