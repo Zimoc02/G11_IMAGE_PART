@@ -464,7 +464,8 @@ while True:
             target_idx = nearest_idx + headidx
             if target_idx < len(real_world_path):
                 target_point = real_world_path[target_idx]
-                print(real_world_red[1], real_world_red[0],target_point[0], target_point[1])
+                print(f"[Current] 红球: X={real_world_red[0]:.2f}, Y={real_world_red[1]:.2f}")
+                print(f"[Target ] 目标: X={target_point[0]:.2f}, Y={target_point[1]:.2f}")
                 # 在图像上用投影方式标记目标点位置（可选：如你想画出来）
                 target_px = (int(target_point[0]), int(target_point[1]))  # (x, y)
 
@@ -491,7 +492,7 @@ while True:
                 if len(errors) % 30 == 0:
                     print(f"[误差统计] 平均: {np.mean(errors):.2f} px, 最大: {np.max(errors):.2f} px, 标准差: {np.std(errors):.2f} px")
 
-                send_two_points_16bit(real_world_red[1], real_world_red[0],
+                #send_two_points_16bit(real_world_red[1], real_world_red[0],
                                       int(target_point[0]), int(target_point[1]))
 
                 x__1 = real_world_red[1]
