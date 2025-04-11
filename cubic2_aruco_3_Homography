@@ -448,24 +448,23 @@ while True:
 
     if red_center:
         real_world_red = detect_aruco_and_map_red_ball(red_center, frame)
-    '''    
     if real_world_red:
         print(f"红球在 ArUco 平面坐标系中的位置: {real_world_red}")
-    '''
+
     if real_world_red:
         # 当前红球位置：红色圆圈
         cv2.circle(display, (int(real_world_red[1]), int(real_world_red[0])), 8, (0, 0, 255), -1)
-        cv2.putText(display, "Current", (int(real_world_red[1]) + 10, int(real_world_red[0]) - 10),
+        cv2.putText(display, "Current", (real_world_red[1] + 10, real_world_red[0] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
         # 查找 real_world_path 中最接近 real_world_red 的点（注意 real_world_red 仍是图像坐标）
         if real_world_path:
-            distances = [calculate_distance(real_world_red, (pt[1], pt[0])) for pt in real_world_path]
+            distances = [calculate_distance(real_world_red, (pt[1]), (pt[0])) for pt in real_world_path]
             nearest_idx = int(np.argmin(distances))
             target_idx = nearest_idx + headidx
             if target_idx < len(real_world_path):
                 target_point = real_world_path[target_idx]
-
+                print(real_world_red[1], real_world_red[0],target_point[0], target_point[1])
                 # 在图像上用投影方式标记目标点位置（可选：如你想画出来）
                 target_px = (int(target_point[0]), int(target_point[1]))  # (x, y)
 
