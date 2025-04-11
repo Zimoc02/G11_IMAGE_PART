@@ -414,61 +414,54 @@ while True:
         cv2.putText(display, "Current", (red_center[1] + 10, red_center[0] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-        # 查找 refined_path 中最接近 red_center 的点，然后+3个点
-        if refined_path:
-            distances = [calculate_distance(red_center, pt) for pt in refined_path]
+        # 查找 real_world_path 中最接近 red_center 的点（注意 red_center 仍是图像坐标）
+        if real_world_path:
+            distances = [calculate_distance(red_center, (int(pt[1]), int(pt[0]))) for pt in real_world_path]
             nearest_idx = int(np.argmin(distances))
             target_idx = nearest_idx + headidx
-            if target_idx < len(refined_path):
-                target_point = refined_path[target_idx]
+            if target_idx < len(real_world_path):
+                target_point = real_world_path[target_idx]
+
+                # 在图像上用投影方式标记目标点位置（可选：如你想画出来）
+                target_px = (int(target_point[0]), int(target_point[1]))  # (x, y)
 
                 # 目标点：紫色圆圈
-                cv2.circle(display, (target_point[1], target_point[0]), 8, (255, 0, 255), -1)
-                cv2.putText(display, "Target", (target_point[1] + 10, target_point[0] - 10),
+                cv2.circle(display, target_px, 8, (255, 0, 255), -1)
+                cv2.putText(display, "Target", (target_px[0] + 10, target_px[1] - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
 
-                # 画箭头：从当前红球指向目标点（紫色箭头）
+                # 画箭头（注意方向要从红球 → 目标点）：
                 cv2.arrowedLine(display,
                                 (red_center[1], red_center[0]),
-                                (target_point[1], target_point[0]),
+                                target_px,
                                 (255, 0, 255), 2, tipLength=0.3)
-                '''                
-                for i, pt in enumerate(history_points):
-                    if i >= len(errors):
-                        break
-                    err_val = errors[i]
-                    err_clamped = min(int(err_val * 3), 255)  # 控制颜色范围
-                    color = (0, 255 - err_clamped, err_clamped)  # 绿色 = 精确，红色 = 偏差大
-                    cv2.circle(display, (pt[1], pt[0]), 2, color, -1)
-                '''
 
-                nearest_path_point = refined_path[nearest_idx]
-                euclidean_error = calculate_distance(red_center, nearest_path_point)
+                nearest_path_point = real_world_path[nearest_idx]
                 nearest_points.append(nearest_path_point)
 
-                
-
-                # 保存误差与时间
+                # 误差（仍基于像素图像）
+                euclidean_error = calculate_distance(red_center, (int(nearest_path_point[1]), int(nearest_path_point[0])))
                 errors.append(euclidean_error)
                 timestamps.append(time.time())
-                history_points.append(red_center)  # 添加到历史轨迹中
+                history_points.append(red_center)
 
-                # 每 30 帧打印统计
                 if len(errors) % 30 == 0:
                     print(f"[误差统计] 平均: {np.mean(errors):.2f} px, 最大: {np.max(errors):.2f} px, 标准差: {np.std(errors):.2f} px")
 
-                send_two_points_16bit(red_center[1], red_center[0], target_point[1], target_point[0])
-                
+                send_two_points_16bit(red_center[1], red_center[0],
+                                      int(target_point[0]), int(target_point[1]))
+
                 x__1 = red_center[1]
-                x__2 = target_point[1]
+                x__2 = int(target_point[0])
                 y__1 = red_center[0]
-                y__2 = target_point[0]
+                y__2 = int(target_point[1])
                 
     cv2.imshow("Red Ball Tracking", display)
-    # ✅ 加在这里，显示实时误差
+
     if errors:
         current_error = errors[-1]
-        cv2.putText(display, f"Error: {int(current_error)} px", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.putText(display, f"Error: {int(current_error)} px", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
@@ -477,14 +470,15 @@ while True:
         ret, new_frame = video_capture.read()
         if ret:
             path_overlay, red_center, refined_path = generate_path_overlay(new_frame)
+            real_world_path = map_path_to_aruco_plane_coords(refined_path, H)
             print("[热键P] 重新生成路径图层")
     elif key == ord('t'):
-        if red_center and refined_path:
-            distances = [calculate_distance(red_center, pt) for pt in refined_path]
+        if red_center and real_world_path:
+            distances = [calculate_distance(red_center, (int(pt[1]), int(pt[0]))) for pt in real_world_path]
             nearest_idx = int(np.argmin(distances))
             target_idx = nearest_idx + headidx
-            if target_idx < len(refined_path):
-                target_point = refined_path[target_idx]
+            if target_idx < len(real_world_path):
+                target_point = real_world_path[target_idx]
                 print(f"[热键T] 当前红球位置: {red_center}，目标点: {target_point}")
             else:
                 print("[热键T] 红球靠近路径尾部，无法获取目标点")
@@ -493,8 +487,9 @@ while True:
             writer = csv.writer(csvfile)
             writer.writerow(['Timestamp', 'Error(px)', 'Red_X', 'Red_Y', 'Nearest_X', 'Nearest_Y'])
             for t, e, red_pt, path_pt in zip(timestamps, errors, history_points, nearest_points):
-                writer.writerow([t, e, red_pt[1], red_pt[0], path_pt[1], path_pt[0]])
+                writer.writerow([t, e, red_pt[1], red_pt[0], path_pt[0], path_pt[1]])
         print("✅ [热键S] 已保存误差数据到 tracking_accuracy.csv")
+
 
 video_capture.release()
 cv2.destroyAllWindows()
