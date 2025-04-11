@@ -300,6 +300,44 @@ def compute_homography_from_aruco(aruco_centers_dict, target_size=(22, 17)):
     # 3. 计算 Homography
     H, status = cv2.getPerspectiveTransform(src_pts, dst_pts)
     return H
+#实时检测ARUCO的位置（四个 ROI 中的 ）
+def detect_aruco_and_update(frame):
+    global aruco_corners_dict, aruco_centers_dict, aruco_roi_list
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # 如果 ROI 区域存在，先进行 ROI 裁剪并只在该区域检测
+    if aruco_roi_list:
+        for roi in aruco_roi_list:
+            marker_id, (x_min, x_max, y_min, y_max) = roi
+            roi_frame = gray[y_min:y_max, x_min:x_max]
+            corners, ids, _ = aruco.detectMarkers(roi_frame, ARUCO_DICT, parameters=ARUCO_PARAMS)
+
+            # 检测到 ArUco marker 后更新字典
+            if ids is not None:
+                for i, marker_id in enumerate(ids.flatten()):
+                    if 0 <= marker_id <= 3:
+                        pts = corners[i][0] + np.array([x_min, y_min])  # 添加 ROI 偏移
+                        aruco_corners_dict[marker_id] = pts
+                        center = np.mean(pts, axis=0)
+                        aruco_centers_dict[marker_id] = tuple(center)
+
+        print(f"🔍 实时检测到 ArUco ID: {list(aruco_corners_dict.keys())}")
+    else:
+        # 如果没有 ROI，直接在整个图像上进行检测
+        corners, ids, _ = aruco.detectMarkers(gray, ARUCO_DICT, parameters=ARUCO_PARAMS)
+
+        if ids is not None:
+            aruco_corners_dict.clear()
+            aruco_centers_dict.clear()
+            for i, marker_id in enumerate(ids.flatten()):
+                if 0 <= marker_id <= 3:
+                    pts = corners[i][0]
+                    aruco_corners_dict[marker_id] = pts
+                    center = np.mean(pts, axis=0)
+                    aruco_centers_dict[marker_id] = tuple(center)
+            print(f"🔍 实时检测到 ArUco ID: {list(aruco_corners_dict.keys())}")
+        else:
+            print("⚠️ 实时未检测到任何 ArUco")
 
 # 摄像头启动
 pipeline = (
