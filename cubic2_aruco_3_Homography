@@ -298,7 +298,7 @@ def compute_homography_from_aruco(aruco_centers_dict, target_size=(22, 17)):
     ], dtype=np.float32)
 
     # 3. 计算 Homography
-    H, status = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    H = cv2.getPerspectiveTransform(src_pts, dst_pts)
     return H
 #实时检测ARUCO的位置（四个 ROI 中的 ）
 def detect_aruco_and_update(frame):
@@ -379,11 +379,12 @@ print(f"路径起点：{red_center}，路径长度：{len(refined_path)}")
 
 #开始使用Homography转化路径
 get_aruco_centers(aruco_corners_dict)
-    H = compute_homography_from_aruco(aruco_centers_dict, target_size=(23, 17))
-    if H is not None:
-        print("✅ Homography 矩阵计算完成")
-        print(H)
+H = compute_homography_from_aruco(aruco_centers_dict, target_size=(22, 17))
+if H is not None:
+    print("✅ Homography 矩阵计算完成")
+    print(H)
 real_world_path = map_path_to_aruco_plane_coords(refined_path, H)
+
 '''
 #得到 H 后，在 refined_path 上做投影
 if H is not None:
