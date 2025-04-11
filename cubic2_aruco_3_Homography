@@ -338,6 +338,44 @@ def detect_aruco_and_update(frame):
             print(f"🔍 实时检测到 ArUco ID: {list(aruco_corners_dict.keys())}")
         else:
             print("⚠️ 实时未检测到任何 ArUco")
+
+#使用识别出来的ArUco进行小球坐标还原            
+def detect_aruco_and_map_red_ball(red_center, frame):
+    """
+    已知红球图像坐标 red_center，
+    自动检测 ArUco marker、计算 H 矩阵，并将 red_center 映射到 ArUco 平面坐标系中。
+    
+    参数：
+        red_center: tuple(int, int)，图像坐标下的红球位置 (y, x)
+        frame: 当前图像帧
+    
+    返回：
+        real_world_red_center: tuple(float, float)，映射到 ArUco 平面坐标系的坐标 (x, y)
+    """
+    if red_center is None:
+        print("⚠️ 输入的 red_center 为空，跳过")
+        return None
+
+    # 1. 实时检测 ArUco marker 并更新 ROI 和角点字典
+    detect_aruco_and_update(frame)
+
+    # 2. 获取中心点
+    get_aruco_centers(aruco_corners_dict)
+
+    # 3. 计算 Homography 矩阵
+    H = compute_homography_from_aruco(aruco_centers_dict, target_size=(22, 17))
+    if H is None:
+        print("❌ 无法计算 Homography，返回 None")
+        return None
+
+    # 4. 将红球图像坐标转换为 ArUco 平面坐标系
+    point_arr = np.array([[[red_center[1], red_center[0]]]], dtype=np.float32)  # 注意顺序 x, y
+    projected = cv2.perspectiveTransform(point_arr, H)
+    real_world_red_center = tuple(projected[0][0])
+
+    return real_world_red_center
+
+
 def map_path_to_aruco_plane_coords(refined_path, H):
     if H is None:
         print("❌ H 矩阵为空，无法进行坐标映射")
@@ -407,16 +445,21 @@ while True:
 
     red_center = detect_red_ball(frame)
     display = cv2.addWeighted(path_overlay, 0.6, frame, 0.4, 0)
-        
+
     if red_center:
+        real_world_red = detect_aruco_and_map_red_ball(red_center, frame)
+    if real_world_red:
+        print(f"红球在 ArUco 平面坐标系中的位置: {real_world_red}")
+
+    if real_world_red:
         # 当前红球位置：红色圆圈
-        cv2.circle(display, (red_center[1], red_center[0]), 8, (0, 0, 255), -1)
-        cv2.putText(display, "Current", (red_center[1] + 10, red_center[0] - 10),
+        cv2.circle(display, (int(real_world_red[1]), int(real_world_red[0])), 8, (0, 0, 255), -1)
+        cv2.putText(display, "Current", (real_world_red[1] + 10, real_world_red[0] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-        # 查找 real_world_path 中最接近 red_center 的点（注意 red_center 仍是图像坐标）
+        # 查找 real_world_path 中最接近 real_world_red 的点（注意 real_world_red 仍是图像坐标）
         if real_world_path:
-            distances = [calculate_distance(red_center, (int(pt[1]), int(pt[0]))) for pt in real_world_path]
+            distances = [calculate_distance(real_world_red, (pt[1]), (pt[0])) for pt in real_world_path]
             nearest_idx = int(np.argmin(distances))
             target_idx = nearest_idx + headidx
             if target_idx < len(real_world_path):
@@ -440,20 +483,20 @@ while True:
                 nearest_points.append(nearest_path_point)
 
                 # 误差（仍基于像素图像）
-                euclidean_error = calculate_distance(red_center, (int(nearest_path_point[1]), int(nearest_path_point[0])))
+                euclidean_error = calculate_distance(real_world_red, (int(nearest_path_point[1]), int(nearest_path_point[0])))
                 errors.append(euclidean_error)
                 timestamps.append(time.time())
-                history_points.append(red_center)
+                history_points.append(real_world_red)
 
                 if len(errors) % 30 == 0:
                     print(f"[误差统计] 平均: {np.mean(errors):.2f} px, 最大: {np.max(errors):.2f} px, 标准差: {np.std(errors):.2f} px")
 
-                send_two_points_16bit(red_center[1], red_center[0],
+                send_two_points_16bit(real_world_red[1], real_world_red[0],
                                       int(target_point[0]), int(target_point[1]))
 
-                x__1 = red_center[1]
+                x__1 = real_world_red[1]
                 x__2 = int(target_point[0])
-                y__1 = red_center[0]
+                y__1 = real_world_red[0]
                 y__2 = int(target_point[1])
                 
     cv2.imshow("Red Ball Tracking", display)
@@ -474,7 +517,7 @@ while True:
             print("[热键P] 重新生成路径图层")
     elif key == ord('t'):
         if red_center and real_world_path:
-            distances = [calculate_distance(red_center, (int(pt[1]), int(pt[0]))) for pt in real_world_path]
+            distances = [calculate_distance(red_center, (pt[1], pt[0])) for pt in real_world_path]
             nearest_idx = int(np.argmin(distances))
             target_idx = nearest_idx + headidx
             if target_idx < len(real_world_path):
