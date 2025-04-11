@@ -384,6 +384,13 @@ if H is not None:
     print("✅ Homography 矩阵计算完成")
     print(H)
 real_world_path = map_path_to_aruco_plane_coords(refined_path, H)
+# 导出路径坐标点（单位是以 ArUco 平面中心为 (0, 0) 的实际坐标系）
+with open('real_world_path.csv', 'w', newline='') as csvfile:
+    writer = csv.writer(csvfile)
+    writer.writerow(['X (cm)', 'Y (cm)'])  # 或者单位是你设置的格子单位
+    for x, y in real_world_path:
+        writer.writerow([x, y])
+print("✅ 已保存路径到 real_world_path.csv")
 
 '''
 #得到 H 后，在 refined_path 上做投影
