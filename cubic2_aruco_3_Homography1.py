@@ -515,23 +515,21 @@ while True:
             path_overlay, red_center, refined_path = generate_path_overlay(new_frame)
             real_world_path = map_path_to_aruco_plane_coords(refined_path, H)
             print("[热键P] 重新生成路径图层")
-    elif key == ord('t'):
-        if red_center and real_world_path:
-            distances = [calculate_distance(red_center, (pt[1], pt[0])) for pt in real_world_path]
-            nearest_idx = int(np.argmin(distances))
-            target_idx = nearest_idx + headidx
-            if target_idx < len(real_world_path):
-                target_point = real_world_path[target_idx]
-                print(f"[热键T] 当前红球位置: {red_center}，目标点: {target_point}")
-            else:
-                print("[热键T] 红球靠近路径尾部，无法获取目标点")
     elif key == ord('s'):
         with open('tracking_accuracy.csv', 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(['Timestamp', 'Error(px)', 'Red_X', 'Red_Y', 'Nearest_X', 'Nearest_Y'])
+            writer.writerow(['Timestamp', 'Error (cm)', 
+                         'Red_X (cm)', 'Red_Y (cm)', 
+                         'Nearest_X (cm)', 'Nearest_Y (cm)'])
             for t, e, red_pt, path_pt in zip(timestamps, errors, history_points, nearest_points):
-                writer.writerow([t, e, red_pt[1], red_pt[0], path_pt[0], path_pt[1]])
-        print("✅ [热键S] 已保存误差数据到 tracking_accuracy.csv")
+                writer.writerow([
+                f"{t:.3f}",
+                f"{e:.3f}",
+                f"{red_pt[0]:.3f}", f"{red_pt[1]:.3f}",
+                f"{path_pt[0]:.3f}", f"{path_pt[1]:.3f}"
+                ])
+        print("✅ [热键S] 已保存物理空间误差数据到 tracking_accuracy.csv")
+
 
 
 video_capture.release()
