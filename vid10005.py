@@ -1,0 +1,332 @@
+import cv2
+import numpy as np
+import math
+import smbus
+from collections import deque
+from scipy.spatial import cKDTree
+
+# ====== I2C 初始化 ======
+bus = smbus.SMBus(1)
+arduino_address = 0x08
+
+def int16_to_bytes(val):
+    val = int(val)
+    if val < 0:
+        val = (1 << 16) + val
+    high = (val >> 8) & 0xFF
+    low = val & 0xFF
+    return [high, low]
+
+def send_two_points_16bit(x1, y1, x2, y2):
+    data = int16_to_bytes(x1) + int16_to_bytes(y1) + int16_to_bytes(x2) + int16_to_bytes(y2)
+    try:
+        bus.write_i2c_block_data(arduino_address, 0x00, data)
+        print(f"Sent: ({x1}, {y1}), ({x2}, {y2})")
+    except Exception as e:
+        print(f"I2C Send Error: {e}")
+
+# ====== 参数设置 ======
+TRACKING_SIZE = 100
+CURVE_PARAMS = {'min_contour_area': 50, 'approx_epsilon': 0.02, 'direction_samples': 5}
+lower_red_1 = np.array([0, 100, 50])
+upper_red_1 = np.array([10, 255, 255])
+lower_red_2 = np.array([170, 100, 50])
+upper_red_2 = np.array([180, 255, 255])
+lower_black = np.array([0, 0, 0])
+upper_black = np.array([180, 255, 50])
+
+# ====== 状态变量 ======
+tracking_roi = None
+position_history = deque(maxlen=10)
+intersection_points = []
+farthest_point = None
+prediction_angle = None
+visited_positions = set()
+show_path = True
+
+# ====== 路径图层生成函数 ======
+def generate_path_overlay(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    selected_path_image = np.zeros_like(image)
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        perimeter = cv2.arcLength(cnt, True)
+        if 100 < area < 2000 and perimeter > 200:
+            approx = cv2.approxPolyDP(cnt, 0.02 * perimeter, True)
+            if len(approx) > 5:
+                cv2.drawContours(selected_path_image, [cnt], -1, (255, 255, 255), 2)
+    gray_selected = cv2.cvtColor(selected_path_image, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray_selected, 127, 255, cv2.THRESH_BINARY)
+    skeleton = cv2.ximgproc.thinning(binary)
+    non_zero_points = np.column_stack(np.where(skeleton > 0))
+    kdtree = cKDTree(non_zero_points)
+    placed_points = []
+    used_indices = set()
+    for idx, point in enumerate(non_zero_points):
+        if idx not in used_indices:
+            placed_points.append(point)
+            indices = kdtree.query_ball_point(point, r=35)
+            used_indices.update(indices)
+    placed_points = np.array(placed_points)
+    connection_image = np.zeros_like(image)
+    kdtree_points = cKDTree(placed_points)
+    visited = set()
+    for i, point in enumerate(placed_points):
+        distances, indices = kdtree_points.query(point, k=3)
+        for idx in indices[1:3]:
+            if (i, idx) not in visited and (idx, i) not in visited:
+                nearest = placed_points[idx]
+                cv2.line(connection_image, (int(point[1]), int(point[0])), (int(nearest[1]), int(nearest[0])), (0, 255, 0), 2)
+                visited.add((i, idx))
+    overlay = image.copy()
+    for point in placed_points:
+        cv2.circle(overlay, (int(point[1]), int(point[0])), 8, (255, 0, 0), -1)
+    overlay = cv2.addWeighted(overlay, 0.5, connection_image, 0.5, 0)
+    
+    hsv_path = cv2.cvtColor(image,cv2.COLOR_BGR2HSV)
+    red_mask_path = cv2.bitwise_or(
+                cv2.inRange(hsv_path, lower_red_1, upper_red_1),
+                cv2.inRange(hsv_path, lower_red_2, upper_red_2)
+            )
+    kernel = np.ones((5, 5), np.uint8)
+    red_mask_path = cv2.morphologyEx(red_mask_path, cv2.MORPH_OPEN, kernel)
+    contours, _ = cv2.findContours(red_mask_path, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    red_center = None
+    max_area = 0
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > 100 and area > max_area:
+            x,y,w,h = cv2.boundingRect(cnt)
+            center_x = x+w//2
+            center_y = y+h//2
+            red_center = (center_x,center_y)
+            max_area = area
+    return overlay
+
+def calculate_distance(pt1, pt2):
+    return math.hypot(pt1[0] - pt2[0], pt1[1] - pt2[1])
+
+def detect_black_curve(roi, roi_position):
+    x, y, w, h = roi_position
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, lower_black, upper_black)
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    current_intersections = []
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        if cv2.contourArea(contour) > CURVE_PARAMS['min_contour_area']:
+            perimeter = cv2.arcLength(contour, True)
+            epsilon = CURVE_PARAMS['approx_epsilon'] * perimeter
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            for point in approx:
+                px, py = point[0]
+                if px == 0 or px == w - 1 or py == 0 or py == h - 1:
+                    global_x = x + px
+                    global_y = y + py
+                    current_intersections.append((global_x, global_y))
+    return current_intersections, mask
+
+# ====== 摄像头初始化与路径图层 ======
+pipeline = (
+    "v4l2src device=/dev/video0 ! "
+    "image/jpeg,width=1280,height=720,framerate=60/1 ! "
+    "jpegdec ! "
+    "videoconvert ! "
+    "appsink"
+)
+video_capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+if not video_capture.isOpened():
+    print("错误：无法打开摄像头")
+    exit()
+ret, initial_frame = video_capture.read()
+if not ret:
+    print("错误：无法捕捉初始图像")
+    exit()
+path_overlay = generate_path_overlay(initial_frame)
+
+# ====== 主循环 ======
+while True:
+    ret, frame = video_capture.read()
+    if not ret:
+        break
+    frame = cv2.addWeighted(path_overlay, 0.6, frame, 0.4, 0)
+
+    frame_height, frame_width = frame.shape[:2]
+    detected = False
+    intersection_points = []
+    farthest_point = None
+    prediction_angle = None
+
+    if tracking_roi is not None:
+        x, y, w, h = tracking_roi
+        x, y = max(0, x), max(0, y)
+        w = min(w, frame_width - x)
+        h = min(h, frame_height - y)
+
+        if w > 0 and h > 0:
+            roi = frame[y:y + h, x:x + w]
+            hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+            red_mask = cv2.bitwise_or(
+                cv2.inRange(hsv_roi, lower_red_1, upper_red_1),
+                cv2.inRange(hsv_roi, lower_red_2, upper_red_2)
+            )
+            kernel = np.ones((5, 5), np.uint8)
+            red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+            contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            for contour in contours:
+                if cv2.contourArea(contour) > 200:
+                    (x_local, y_local, w_local, h_local) = cv2.boundingRect(contour)
+                    center_x = x + x_local + w_local // 2
+                    center_y = y + y_local + h_local // 2
+
+                    new_x = max(0, min(center_x - TRACKING_SIZE // 2, frame_width - TRACKING_SIZE))
+                    new_y = max(0, min(center_y - TRACKING_SIZE // 2, frame_height - TRACKING_SIZE))
+                    tracking_roi = (new_x, new_y, TRACKING_SIZE, TRACKING_SIZE)
+
+                    position_history.append((center_x, center_y))
+
+                    AUX_RADIUS = 3
+                    AUX_POINTS_PER_CIRCLE = 30
+                    for i in range(AUX_POINTS_PER_CIRCLE):
+                        angle = 2 * math.pi * i / AUX_POINTS_PER_CIRCLE
+                        vx = int(center_x + AUX_RADIUS * math.cos(angle))
+                        vy = int(center_y + AUX_RADIUS * math.sin(angle))
+                        if 0 <= vx < frame_width and 0 <= vy < frame_height:
+                            visited_positions.add((vx, vy))
+                    detected = True
+
+                    erase_radius = 3.5 * TRACKING_SIZE
+                    visited_positions = {
+                        (vx, vy) for (vx, vy) in visited_positions
+                        if calculate_distance((vx, vy), (center_x, center_y)) <= erase_radius
+                    }
+
+                    intersection_points, black_mask = detect_black_curve(roi, (x, y, w, h))
+                    colored_mask = cv2.cvtColor(black_mask, cv2.COLOR_GRAY2BGR)
+                    frame[y:y + h, x:x + w] = cv2.addWeighted(frame[y:y + h, x:x + w], 0.7, colored_mask, 0.3, 0)
+                    break
+
+    if not detected:
+        tracking_roi = None
+        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        red_mask = cv2.bitwise_or(
+            cv2.inRange(hsv_frame, lower_red_1, upper_red_1),
+            cv2.inRange(hsv_frame, lower_red_2, upper_red_2)
+        )
+        kernel = np.ones((5, 5), np.uint8)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        for contour in contours:
+            if cv2.contourArea(contour) > 20:
+                (x, y, w, h) = cv2.boundingRect(contour)
+                center_x = x + w // 2
+                center_y = y + h // 2
+                new_x = max(0, min(center_x - TRACKING_SIZE // 2, frame_width - TRACKING_SIZE))
+                new_y = max(0, min(center_y - TRACKING_SIZE // 2, frame_height - TRACKING_SIZE))
+                tracking_roi = (new_x, new_y, TRACKING_SIZE, TRACKING_SIZE)
+                break
+
+    if visited_positions and intersection_points and tracking_roi:
+        visited_list = list(visited_positions)
+        x_roi, y_roi, w_roi, h_roi = tracking_roi
+
+        def is_outside_roi(px, py):
+            return not (x_roi <= px <= x_roi + w_roi and y_roi <= py <= y_roi + h_roi)
+
+        filtered_visited = [(vx, vy) for vx, vy in visited_list if is_outside_roi(vx, vy)]
+
+        for (fx, fy) in filtered_visited:
+            cv2.circle(frame, (fx, fy), 2, (144, 238, 144), -1)
+
+        if filtered_visited:
+            total = len(filtered_visited)
+            best_score = -1
+            for idx_ip, ip in enumerate(intersection_points):
+                score = 0
+                for idx, vp in enumerate(filtered_visited):
+                    weight = (total - idx) / total
+                    dist = calculate_distance(ip, vp)
+                    score += weight * dist
+                if score > best_score:
+                    best_score = score
+                    farthest_point = ip
+
+    if farthest_point and position_history:
+        current_pos = position_history[-1]
+        dx = farthest_point[0] - current_pos[0]
+        dy = farthest_point[1] - current_pos[1]
+        prediction_angle = (math.degrees(math.atan2(-dy, dx)) + 360) % 360
+        send_two_points_16bit(current_pos[0], current_pos[1], farthest_point[0], farthest_point[1])
+
+    if tracking_roi:
+        x_roi, y_roi, w_roi, h_roi = tracking_roi
+        cv2.rectangle(frame, (x_roi, y_roi), (x_roi + w_roi, y_roi + h_roi), (0, 255, 255), 2)
+
+    y_offset = 30
+    line_height = 25
+    for idx, offset in enumerate([2, 4, 6, 8, 10]):
+        if len(position_history) >= offset:
+            pos = position_history[-offset]
+            color = (0, 255 - idx * 50, idx * 50)
+            cv2.circle(frame, pos, 7 - idx, color, -1)
+            cv2.putText(frame, f"T-{offset}: {pos}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            y_offset += line_height
+
+    for idx, (px, py) in enumerate(intersection_points):
+        cv2.circle(frame, (px, py), 5, (0, 255, 255), -1)
+        cv2.putText(frame, f"{idx+1}", (px+5, py-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+    if farthest_point and prediction_angle is not None:
+        cv2.circle(frame, farthest_point, 10, (255, 192, 203), -1)
+        if position_history:
+            current_pos = position_history[-1]
+            cv2.arrowedLine(frame, current_pos, farthest_point, (255, 192, 203), 2, tipLength=0.3)
+            cv2.putText(frame, f"Angle: {prediction_angle:.1f}°",
+                        (farthest_point[0] + 15, farthest_point[1] - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 192, 203), 2)
+
+    if show_path:
+        for vx, vy in visited_positions:
+            cv2.circle(frame, (vx, vy), 1, (255, 255, 255), -1)
+
+    cv2.imshow("Tracking", frame)
+    # ====== 热键控制 ======
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
+        break
+    elif key == ord('h'):
+        show_path = not show_path
+        print("[Hotkey] Toggled path display:", "ON" if show_path else "OFF")
+    elif key == ord('c'):
+        visited_positions.clear()
+        if position_history:
+            current_x, current_y = position_history[-1]
+            for i in range(100):
+                angle = np.random.uniform(0, 2 * np.pi)
+                radius = np.random.uniform(0, 10)
+                dx = int(radius * np.cos(angle))
+                dy = int(radius * np.sin(angle))
+                vx = current_x + dx
+                vy = current_y + dy
+                if 0 <= vx < frame.shape[1] and 0 <= vy < frame.shape[0]:
+                    visited_positions.add((vx, vy))
+        else:
+            print("[Hotkey] No current position to add points.")
+    elif key == ord('p'):
+        print("[Hotkey] Re-capturing path overlay...")
+        ret, new_frame = video_capture.read()
+        if ret:
+            path_overlay = generate_path_overlay(new_frame)
+            print("[Hotkey] New path overlay generated.")
+        else:
+            print("[Hotkey] Failed to capture new frame.")
+
+video_capture.release()
+cv2.destroyAllWindows()
