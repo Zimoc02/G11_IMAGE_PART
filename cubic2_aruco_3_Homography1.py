@@ -515,7 +515,7 @@ while True:
         cv2.putText(display, f"Error: {int(current_error)} px", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-    key = None
+    
     key = None
     if select.select([sys.stdin], [], [], 0.01)[0]:
         key = sys.stdin.readline().strip()
