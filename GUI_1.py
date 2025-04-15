@@ -2,18 +2,16 @@ import tkinter as tk
 import subprocess
 import os
 import signal
+import time
 
-# 全局变量用于保存子进程
 process = None
 
-# 启动 xx.py
 def start_script():
     global process
     if process is None:
-        process = subprocess.Popen(['python3', 'xx.py'])
+        process = subprocess.Popen(['python3', 'cubic2_aruco_3_Homography1.py'])
         status_label.config(text="程序运行中", fg="green")
 
-# 停止 xx.py
 def stop_script():
     global process
     if process is not None:
@@ -21,18 +19,34 @@ def stop_script():
         process = None
         status_label.config(text="程序已停止", fg="red")
 
-# 创建 GUI 界面
+def send_key_to_script(key):
+    global process
+    if process is not None:
+        try:
+            process.stdin.write(f"{key}\n".encode())
+            process.stdin.flush()
+        except Exception as e:
+            print(f"⚠️ 无法发送按键: {e}")
+
+def regenerate_path():
+    print("🌀 发送热键 p（重新生成路径）")
+    send_key_to_script('p')
+
+def save_accuracy():
+    print("💾 发送热键 s（保存误差数据）")
+    send_key_to_script('s')
+
+# 主窗口
 root = tk.Tk()
-root.title("红球路径控制 GUI")
-root.geometry("300x180")
+root.title("红球控制 GUI")
+root.geometry("320x300")
 
-start_btn = tk.Button(root, text="Start", command=start_script, bg="lightgreen", width=15, height=2)
-start_btn.pack(pady=10)
+tk.Button(root, text="▶️ Start", command=start_script, width=25, height=2, bg="lightgreen").pack(pady=8)
+tk.Button(root, text="⏹️ End", command=stop_script, width=25, height=2, bg="salmon").pack(pady=8)
+tk.Button(root, text="🔁 Re-generate Path", command=regenerate_path, width=25, height=2).pack(pady=8)
+tk.Button(root, text="💾 Save Accuracy", command=save_accuracy, width=25, height=2).pack(pady=8)
 
-stop_btn = tk.Button(root, text="End", command=stop_script, bg="salmon", width=15, height=2)
-stop_btn.pack(pady=10)
-
-status_label = tk.Label(root, text="等待启动...", font=("Arial", 12))
-status_label.pack()
+status_label = tk.Label(root, text="等待启动...", fg="blue", font=("Arial", 12))
+status_label.pack(pady=10)
 
 root.mainloop()
