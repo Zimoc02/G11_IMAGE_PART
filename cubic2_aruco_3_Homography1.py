@@ -7,7 +7,8 @@ from scipy.spatial import cKDTree
 from scipy.interpolate import splprep, splev
 import time  # 加在最顶部和其他 import 放一起
 import csv
-
+import sys
+import select
 from cv2 import aruco
 #Aruco 设置
 ARUCO_DICT = aruco.Dictionary_get(aruco.DICT_4X4_50)
@@ -49,10 +50,10 @@ def send_two_points_16bit(x1, y1, x2, y2):
 # 参数
 INTERPOLATION_COUNT = 2
 headidx = 30
-lower_red_1 = np.array([0, 100, 50])
-upper_red_1 = np.array([10, 255, 255])
-lower_red_2 = np.array([170, 100, 50])
-upper_red_2 = np.array([180, 255, 255])
+lower_red_1 = np.array([0, 120, 20])
+upper_red_1 = np.array([10, 255, 120])
+lower_red_2 = np.array([170, 120, 20])
+upper_red_2 = np.array([180, 255, 120])
 lower_black = np.array([0, 0, 0])
 upper_black = np.array([180, 255, 50])
 last_send_time = 0  # 全局变量，记录上次发送的时间戳
@@ -170,7 +171,7 @@ def generate_path_overlay(image):
     for idx, point in enumerate(non_zero_points):
         if idx not in used_indices:
             placed_points.append(point)
-            used_indices.update(kdtree.query_ball_point(point, r=15))
+            used_indices.update(kdtree.query_ball_point(point, r=10))
     placed_points = np.array(placed_points)
 
     # 从红球起点出发构建有序路径
@@ -186,7 +187,7 @@ def generate_path_overlay(image):
         for idx in indices:
             candidate = tuple(all_points[idx])
             #if candidate not in used and calculate_distance(current_point, candidate) < 65:
-            if candidate not in used and calculate_distance(current_point, candidate) < 100:
+            if candidate not in used and calculate_distance(current_point, candidate) < 120:
                 next_point = candidate
                 break
         if next_point is None:
@@ -471,7 +472,15 @@ while True:
             target_point = real_world_path[target_idx]
             print(f"[Current] 红球: X={real_world_red[0]:.2f}, Y={real_world_red[1]:.2f}")
             print(f"[Target ] 目标: X={target_point[0]:.2f}, Y={target_point[1]:.2f}")
-
+            
+            x_c = int(real_world_red[0]*100)
+            y_c = int(real_world_red[1]*100)
+            x_d = int(target_point[0]*100)
+            y_d = int(target_point[1]*100)
+            
+            send_two_points_16bit(x_c,y_c,x_d,y_d)
+            
+            
             # === 映射目标点到图像坐标用于可视化 ===
             target_px = inverse_homography_point(target_point, H)
 
@@ -506,7 +515,8 @@ while True:
         cv2.putText(display, f"Error: {int(current_error)} px", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-    key = cv2.waitKey(1) & 0xFF
+    key = None
+    
     if key == ord('q'):
         break
     elif key == ord('p'):
