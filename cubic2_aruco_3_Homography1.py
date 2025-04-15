@@ -521,15 +521,17 @@ while True:
         key = sys.stdin.readline().strip()
     else:
         key = cv2.waitKey(1) & 0xFF
-    if key == 'q' or key == ord('q'):
+        key = chr(key) if key != -1 else None  # 转成字符串，避免类型冲突
+
+    if key == 'q':
         break
-    elif key == 'p' or key == ord('p'):
+    elif key == 'p':
         ret, new_frame = video_capture.read()
         if ret:
             path_overlay, red_center, refined_path = generate_path_overlay(new_frame)
             real_world_path = map_path_to_aruco_plane_coords(refined_path, H)
             print("[热键P] 重新生成路径图层")
-    elif key == 's' or key == ord('s'):
+    elif key == 's':
         with open('tracking_accuracy.csv', 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(['Timestamp', 'Error (cm)', 
