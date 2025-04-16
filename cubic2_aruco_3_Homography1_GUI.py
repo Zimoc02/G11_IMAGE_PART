@@ -431,9 +431,26 @@ def inverse_homography_point(pt, H):
 # ========== GUI 控制逻辑 ===========
 
 def start_video():
-    global video_running, video_thread, start_time
+    global video_running, video_thread, start_time, video_capture
     video_running = True
     start_time = time.time()
+    video_capture = cv2.VideoCapture(0)
+
+    # 路径识别一次
+    ret, frame = video_capture.read()
+    if ret:
+        frame = cv2.flip(frame, 1)  # 同样加翻转
+        overlay, red_center_, refined_path = generate_path_overlay(frame)
+        get_aruco_centers(aruco_corners_dict)
+        H = compute_homography_from_aruco(aruco_centers_dict, target_size=(22, 17))
+        if refined_path and H is not None:
+            real_world_path.clear()
+            real_world_path.extend(map_path_to_aruco_plane_coords(refined_path, H))
+        else:
+            messagebox.showwarning("⚠️", "初始路径识别失败，请检查图像与ArUco标签")
+    else:
+        messagebox.showwarning("⚠️", "无法从摄像头读取初始图像")
+
     video_thread = threading.Thread(target=video_loop)
     video_thread.start()
 
@@ -526,52 +543,49 @@ def stop_video():
 def video_loop():
     global video_capture, red_center, target_point, real_world_red
 
-    video_capture = cv2.VideoCapture(0)  # 摄像头编号，如需更换视频路径可改为文件名
+    video_capture = cv2.VideoCapture(0)
     while video_running:
         ret, frame = video_capture.read()
         if not ret:
             print("⚠️ 无法读取视频帧")
             break
 
-        frame = cv2.flip(frame, 1)  # 水平翻转更符合人类视角
+        frame = cv2.flip(frame, 1)
 
-        # ==== 路径与小球识别 ====
-        overlay, red_center, refined_path = generate_path_overlay(frame)
-        if overlay is None or red_center is None or not refined_path:
-            continue
-
-        get_aruco_centers(aruco_corners_dict)
-        H = compute_homography_from_aruco(aruco_centers_dict)
-        if H:
-            mapped_path = map_path_to_aruco_plane_coords(refined_path, H)
-            real_world_path.clear()
-            real_world_path.extend(mapped_path)
+        # 每帧只找红球，不重新找路径
+        red_center = detect_red_ball(frame)
+        if red_center is not None:
             real_world_red = detect_aruco_and_map_red_ball(red_center, frame)
 
-            # ===== 更新 GUI 上显示坐标 =====
             if real_world_red:
                 current_value.config(text=f"({real_world_red[0]:.2f}, {real_world_red[1]:.2f})")
 
-                # ===== 自动选择目标点 =====
-                if mapped_path:
-                    target_point = mapped_path[min(headidx, len(mapped_path)-1)]
-                    target_value.config(text=f"({target_point[0]:.2f}, {target_point[1]:.2f})")
+                if real_world_path:
+                    dists = [calculate_distance(real_world_red, pt) for pt in real_world_path]
+                    min_idx = np.argmin(dists)
+                    error_point = real_world_path[min_idx]   # 最近点
+                    error = dists[min_idx]
 
-                    error = calculate_distance(real_world_red, target_point)
+                    # 找领先30个点作为目标点
+                    target_idx = min(min_idx + headidx, len(real_world_path) - 1)
+                    target_point = real_world_path[target_idx]
+
+                    # 显示与保存
+                    target_value.config(text=f"({target_point[0]:.2f}, {target_point[1]:.2f})")
                     errors.append(error)
                     timestamps.append(time.time() - start_time)
 
-                    # I2C 发送
+                    # I2C发送
                     x1, y1 = int(real_world_red[0] * 10), int(real_world_red[1] * 10)
                     x2, y2 = int(target_point[0] * 10), int(target_point[1] * 10)
                     send_two_points_16bit(x1, y1, x2, y2)
 
-        # 更新视频到 GUI
-        image_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
-        img_pil = Image.fromarray(image_rgb)
-        img_tk = ImageTk.PhotoImage(img_pil)
-        panel.config(image=img_tk)
-        panel.image = img_tk
+        # 显示视频帧
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+        imgtk = ImageTk.PhotoImage(image=img)
+        panel.imgtk = imgtk
+        panel.config(image=imgtk)
 
     video_capture.release()
     print("🎥 视频线程退出")
@@ -589,7 +603,7 @@ def regenerate_path():
             messagebox.showwarning("提示", "无法从摄像头读取图像帧！")
     else:
         messagebox.showinfo("提示", "视频未启动，请先点击 Start")
-        
+
 def save_accuracy():
     if not errors or not timestamps:
         messagebox.showinfo("提示", "没有可保存的误差数据")
