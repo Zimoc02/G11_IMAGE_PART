@@ -518,7 +518,10 @@ def plot_error_graph():
 
     except ValueError:
         messagebox.showerror("输入错误", "请输入一个有效的秒数！")
-
+        
+def stop_video():
+    global video_running
+    video_running = False
 # ========== 退出钩子 ==========
 def on_closing():
     if messagebox.askokcancel("退出确认", "确定要退出程序吗？"):
