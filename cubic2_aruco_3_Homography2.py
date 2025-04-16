@@ -76,13 +76,12 @@ y__2 = 0
 def detect_red_ball(frame):
     global last_red_center
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
     h, w = frame.shape[:2]
     roi_margin = 60
     max_area = 0
     best_center = None
 
-    # === 尝试在 ROI 内识别 ===
+    # --- ROI 模式识别 ---
     if last_red_center:
         yc, xc = last_red_center
         y_min = max(0, yc - roi_margin)
@@ -105,16 +104,13 @@ def detect_red_ball(frame):
                 best_center = (y + h_box // 2 + y_min, x + w_box // 2 + x_min)
                 max_area = area
 
-        # 可视化 ROI 区域（调试时打开）
-        # cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
-
         if best_center is not None:
             last_red_center = best_center
             return best_center
         else:
             print("🔁 ROI内未检测到红球，尝试整图")
 
-    # === fallback：整张图识别 ===
+    # --- fallback: 整图识别 ---
     red_mask = cv2.bitwise_or(
         cv2.inRange(hsv, lower_red_1, upper_red_1),
         cv2.inRange(hsv, lower_red_2, upper_red_2)
