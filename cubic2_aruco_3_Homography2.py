@@ -76,12 +76,11 @@ y__2 = 0
 def detect_red_ball(frame):
     global last_red_center
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    # 默认使用整张图像
     h, w = frame.shape[:2]
     roi_margin = 60
-    max_area = 0
-    best_center = None
 
-    # --- ROI 模式识别 ---
     if last_red_center:
         yc, xc = last_red_center
         y_min = max(0, yc - roi_margin)
@@ -97,20 +96,20 @@ def detect_red_ball(frame):
         red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
         contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+        max_area = 0
+        best_center = None
         for cnt in contours:
             area = cv2.contourArea(cnt)
             if area > 100 and area > max_area:
                 x, y, w_box, h_box = cv2.boundingRect(cnt)
-                best_center = (y + h_box // 2 + y_min, x + w_box // 2 + x_min)
+                best_center = (y + h_box // 2 + y_min, x + w_box // 2 + x_min)  # 加偏移
                 max_area = area
 
         if best_center is not None:
             last_red_center = best_center
             return best_center
-        else:
-            print("🔁 ROI内未检测到红球，尝试整图")
 
-    # --- fallback: 整图识别 ---
+    # Fallback：整图查找
     red_mask = cv2.bitwise_or(
         cv2.inRange(hsv, lower_red_1, upper_red_1),
         cv2.inRange(hsv, lower_red_2, upper_red_2)
@@ -119,6 +118,7 @@ def detect_red_ball(frame):
     contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     max_area = 0
+    best_center = None
     for cnt in contours:
         area = cv2.contourArea(cnt)
         if area > 100 and area > max_area:
@@ -128,10 +128,7 @@ def detect_red_ball(frame):
 
     if best_center is not None:
         last_red_center = best_center
-        return best_center
-    else:
-        print("❌ 整图模式也未检测到红球")
-        return None
+    return best_center
 
 def calculate_distance(pt1, pt2):
     return math.hypot(pt1[0] - pt2[0], pt1[1] - pt2[1])
@@ -492,6 +489,7 @@ if H is not None:
     projected_path = cv2.perspectiveTransform(path_array, H)
     real_world_path = [(float(p[0][0]), float(p[0][1])) for p in projected_path]  # 棋盘单位下的路径点
 '''
+real_world_red = None
 while True:
     ret, frame = video_capture.read()
     if not ret:
