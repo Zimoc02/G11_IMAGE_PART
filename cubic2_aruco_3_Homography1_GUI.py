@@ -518,10 +518,94 @@ def plot_error_graph():
 
     except ValueError:
         messagebox.showerror("输入错误", "请输入一个有效的秒数！")
-        
+
 def stop_video():
     global video_running
     video_running = False
+
+def video_loop():
+    global video_capture, red_center, target_point, real_world_red
+
+    video_capture = cv2.VideoCapture(0)  # 摄像头编号，如需更换视频路径可改为文件名
+    while video_running:
+        ret, frame = video_capture.read()
+        if not ret:
+            print("⚠️ 无法读取视频帧")
+            break
+
+        frame = cv2.flip(frame, 1)  # 水平翻转更符合人类视角
+
+        # ==== 路径与小球识别 ====
+        overlay, red_center, refined_path = generate_path_overlay(frame)
+        if overlay is None or red_center is None or not refined_path:
+            continue
+
+        get_aruco_centers(aruco_corners_dict)
+        H = compute_homography_from_aruco(aruco_centers_dict)
+        if H:
+            mapped_path = map_path_to_aruco_plane_coords(refined_path, H)
+            real_world_path.clear()
+            real_world_path.extend(mapped_path)
+            real_world_red = detect_aruco_and_map_red_ball(red_center, frame)
+
+            # ===== 更新 GUI 上显示坐标 =====
+            if real_world_red:
+                current_value.config(text=f"({real_world_red[0]:.2f}, {real_world_red[1]:.2f})")
+
+                # ===== 自动选择目标点 =====
+                if mapped_path:
+                    target_point = mapped_path[min(headidx, len(mapped_path)-1)]
+                    target_value.config(text=f"({target_point[0]:.2f}, {target_point[1]:.2f})")
+
+                    error = calculate_distance(real_world_red, target_point)
+                    errors.append(error)
+                    timestamps.append(time.time() - start_time)
+
+                    # I2C 发送
+                    x1, y1 = int(real_world_red[0] * 10), int(real_world_red[1] * 10)
+                    x2, y2 = int(target_point[0] * 10), int(target_point[1] * 10)
+                    send_two_points_16bit(x1, y1, x2, y2)
+
+        # 更新视频到 GUI
+        image_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
+        img_pil = Image.fromarray(image_rgb)
+        img_tk = ImageTk.PhotoImage(img_pil)
+        panel.config(image=img_tk)
+        panel.image = img_tk
+
+    video_capture.release()
+    print("🎥 视频线程退出")
+
+def regenerate_path():
+    global real_world_path, path_overlay, H
+    if video_capture is not None:
+        ret, frame = video_capture.read()
+        if ret:
+            path_overlay, red_center_, refined_path = generate_path_overlay(frame)
+            get_aruco_centers(aruco_corners_dict)
+            H = compute_homography_from_aruco(aruco_centers_dict, target_size=(22, 17))
+            real_world_path = map_path_to_aruco_plane_coords(refined_path, H)
+        else:
+            messagebox.showwarning("提示", "无法从摄像头读取图像帧！")
+    else:
+        messagebox.showinfo("提示", "视频未启动，请先点击 Start")
+        
+def save_accuracy():
+    if not errors or not timestamps:
+        messagebox.showinfo("提示", "没有可保存的误差数据")
+        return
+    try:
+        filename = time.strftime("accuracy_%Y%m%d_%H%M%S.csv")
+        with open(filename, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(['Timestamp (s)', 'Error (cm)'])
+            for t, e in zip(timestamps, errors):
+                writer.writerow([t, e])
+        messagebox.showinfo("保存成功", f"准确度数据已保存为 {filename}")
+    except Exception as e:
+        messagebox.showerror("保存失败", str(e))
+
+
 # ========== 退出钩子 ==========
 def on_closing():
     if messagebox.askokcancel("退出确认", "确定要退出程序吗？"):
