@@ -69,7 +69,7 @@ upper_red_1 = np.array([10, 255, 120])
 lower_red_2 = np.array([170, 120, 20])
 upper_red_2 = np.array([180, 255, 120])
 lower_black = np.array([0, 0, 0])
-upper_black = np.array([180, 255, 50])
+upper_black = np.array([180, 255, 80])
 last_send_time = 0  # 全局变量，记录上次发送的时间戳
 SEND_INTERVAL = 0.04  # 发送间隔 50 毫秒
 errors = []  # 用于保存每帧的误差值
@@ -185,7 +185,7 @@ def generate_path_overlay(image):
     # 基于颜色的黑线掩膜提取路径（避免识别到洞）    
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     black_mask = cv2.inRange(hsv, lower_black, upper_black)
-    black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
     # 骨架提取（黑线细化）
     skeleton = cv2.ximgproc.thinning(black_mask)
@@ -240,7 +240,7 @@ def generate_path_overlay(image):
         next_point = None
         for idx in indices:
             candidate = tuple(all_points[idx])
-            if candidate not in used and calculate_distance(current_point, candidate) < 65:
+            if candidate not in used and calculate_distance(current_point, candidate) < 30:
             #if candidate not in used and calculate_distance(current_point, candidate) < 120:
                 next_point = candidate
                 break
