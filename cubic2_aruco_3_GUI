@@ -6,6 +6,7 @@ import numpy as np
 import csv
 import math
 import cv2
+import threading
 import tkinter as tk
 from tkinter import Label, Button
 from PIL import Image, ImageTk
@@ -239,8 +240,8 @@ def generate_path_overlay(image):
         next_point = None
         for idx in indices:
             candidate = tuple(all_points[idx])
-            #if candidate not in used and calculate_distance(current_point, candidate) < 65:
-            if candidate not in used and calculate_distance(current_point, candidate) < 120:
+            if candidate not in used and calculate_distance(current_point, candidate) < 65:
+            #if candidate not in used and calculate_distance(current_point, candidate) < 120:
                 next_point = candidate
                 break
         if next_point is None:
@@ -460,6 +461,35 @@ def inverse_homography_point(pt, H):
     return int(img_pt[0][0][0]), int(img_pt[0][0][1])
 
 
+class ThreadedCamera:
+    def __init__(self, pipeline):
+        self.capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        self.ret = False
+        self.frame = None
+        self.running = True
+        self.lock = threading.Lock()
+        self.thread = threading.Thread(target=self.update_frame, daemon=True)
+        self.thread.start()
+
+    def update_frame(self):
+        while self.running:
+            ret, frame = self.capture.read()
+            if not ret:
+                continue
+            with self.lock:
+                self.ret = ret
+                self.frame = frame
+
+    def read(self):
+        with self.lock:
+            return self.ret, self.frame.copy() if self.frame is not None else (False, None)
+
+    def release(self):
+        self.running = False
+        self.thread.join()
+        self.capture.release()
+
+
 class RedBallTrackerGUI:
     def __init__(self, window, window_title):
         self.window = window
@@ -534,28 +564,43 @@ class RedBallTrackerGUI:
         self.stop_button.config(state=tk.NORMAL)
         self.status_label.config(text="Status: Running", fg="green")
 
+        # ✅ 使用优化后的摄像头分辨率和帧率
         self.pipeline = (
             "v4l2src device=/dev/video0 ! "
-            "image/jpeg,width=1280,height=720,framerate=60/1 ! "
+            "image/jpeg,width=640,height=480,framerate=30/1 ! "
             "jpegdec ! videoconvert ! appsink"
         )
-        self.video_capture = cv2.VideoCapture(self.pipeline, cv2.CAP_GSTREAMER)
+        self.video_capture = ThreadedCamera(self.pipeline)
 
-        if not self.video_capture.isOpened():
+        # ✅ 检查是否打开成功
+        if not self.video_capture.capture.isOpened():
             print("错误：无法打开摄像头")
             self.status_label.config(text="Status: Camera error", fg="red")
             self.running = False
             return
 
-        ret, initial_frame = self.video_capture.read()
-        if not ret:
+        # ✅ 获取一帧图像用于路径生成
+        # 等待最多 1 秒来获取第一帧
+        start_time = time.time()
+        initial_frame = None
+        ret = False
+        while time.time() - start_time < 1.0:
+            ret, initial_frame = self.video_capture.read()
+            if ret and initial_frame is not None:
+                break
+            time.sleep(0.01)  # 稍等 10ms
+
+        if not ret or initial_frame is None:
             print("错误：无法获取初始图像")
             self.status_label.config(text="Status: Frame error", fg="red")
             self.running = False
             return
 
+
+        # ✅ 路径生成与循环启动
         self.generate_path(initial_frame)
         self.update()
+
 
     def generate_path(self, frame):
         self.path_overlay, red_center, self.refined_path = generate_path_overlay(frame)
@@ -589,7 +634,8 @@ class RedBallTrackerGUI:
     def stop_system(self):
         self.running = False
         if self.video_capture:
-            self.video_capture.release()
+            self.video_capture.release()  # 使用 ThreadedCamera 的 release 方法
+            self.video_capture = None
         self.status_label.config(text="Status: Stopped", fg="gray")
         self.window.quit()
 
