@@ -1,0 +1,10 @@
+import cv2
+video_capture = cv2.VideoCapture(0)
+self.if_video_paused = False
+self.if_camera_imported = True
+self.if_video_imported = True
+self.selection_window.destroy()
+self.get_fps()
+self.get_scaling_factor()
+self.frame_interval = int(1000 // self.video_fps)
+self.play_video()

@@ -1,0 +1,53 @@
+import cv2
+
+# Initialize the camera
+video_capture = cv2.VideoCapture(0)
+
+# Initialize state variables
+if_video_paused = False
+if_camera_imported = True
+if_video_imported = True
+
+# Dummy function to destroy the selection window
+def destroy_selection_window():
+    print("Selection window destroyed")  # Replace with actual window destroy logic if needed
+
+destroy_selection_window()
+
+# Function to get frames per second
+def get_fps(capture):
+    return int(capture.get(cv2.CAP_PROP_FPS)) or 30  # Default to 30 FPS if detection fails
+
+# Function to get scaling factor (you can adjust this logic)
+def get_scaling_factor():
+    return 1.0  # No scaling by default, change if needed
+
+# Function to play the video
+def play_video():
+    global if_video_paused
+    while not if_video_paused:
+        ret, frame = video_capture.read()
+        if not ret:
+            print("Error: Failed to grab frame")
+            break
+
+        # Resize the frame based on scaling factor
+        scaling_factor = get_scaling_factor()
+        frame = cv2.resize(frame, None, fx=scaling_factor, fy=scaling_factor)
+
+        # Display the frame
+        cv2.imshow("Camera Feed", frame)
+
+        # Break the loop if 'q' is pressed
+        if cv2.waitKey(frame_interval) & 0xFF == ord('q'):
+            break
+
+    video_capture.release()
+    cv2.destroyAllWindows()
+
+# Get video properties
+video_fps = get_fps(video_capture)
+frame_interval = int(1000 // video_fps)
+
+# Start playing video
+play_video()
