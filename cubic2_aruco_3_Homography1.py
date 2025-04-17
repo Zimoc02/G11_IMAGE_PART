@@ -65,30 +65,70 @@ nearest_points = []  # ✅ 新增记录最近路径点
 aruco_corners_dict = {}  # 用于存储四个ArUco marker的角点
 aruco_roi_list = [] #ArUco ROI初始化
 aruco_centers_dict = {}  # 用于保存每个 ArUco ID 的中心点坐标
-
+last_red_center = None
 x__1 = 0
 x__2 = 0
 y__1 = 0
 y__2 = 0
 
 # 实时识别红球位置
+# 实时识别红球位置
 def detect_red_ball(frame):
+    global last_red_center
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    # 默认使用整张图像
+    h, w = frame.shape[:2]
+    roi_margin = 60
+
+    if last_red_center:
+        yc, xc = last_red_center
+        y_min = max(0, yc - roi_margin)
+        y_max = min(h, yc + roi_margin)
+        x_min = max(0, xc - roi_margin)
+        x_max = min(w, xc + roi_margin)
+
+        roi_hsv = hsv[y_min:y_max, x_min:x_max]
+        red_mask = cv2.bitwise_or(
+            cv2.inRange(roi_hsv, lower_red_1, upper_red_1),
+            cv2.inRange(roi_hsv, lower_red_2, upper_red_2)
+        )
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        max_area = 0
+        best_center = None
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area > 100 and area > max_area:
+                x, y, w_box, h_box = cv2.boundingRect(cnt)
+                best_center = (y + h_box // 2 + y_min, x + w_box // 2 + x_min)  # 加偏移
+                max_area = area
+
+        if best_center is not None:
+            last_red_center = best_center
+            return best_center
+
+    # Fallback：整图查找
     red_mask = cv2.bitwise_or(
         cv2.inRange(hsv, lower_red_1, upper_red_1),
         cv2.inRange(hsv, lower_red_2, upper_red_2)
     )
     red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
     contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    red_center = None
+
     max_area = 0
+    best_center = None
     for cnt in contours:
         area = cv2.contourArea(cnt)
         if area > 100 and area > max_area:
-            x, y, w, h = cv2.boundingRect(cnt)
-            red_center = (y + h // 2, x + w // 2)
+            x, y, w_box, h_box = cv2.boundingRect(cnt)
+            best_center = (y + h_box // 2, x + w_box // 2)
             max_area = area
-    return red_center
+
+    if best_center is not None:
+        last_red_center = best_center
+    return best_center
 
 def calculate_distance(pt1, pt2):
     return math.hypot(pt1[0] - pt2[0], pt1[1] - pt2[1])
@@ -449,6 +489,7 @@ if H is not None:
     projected_path = cv2.perspectiveTransform(path_array, H)
     real_world_path = [(float(p[0][0]), float(p[0][1])) for p in projected_path]  # 棋盘单位下的路径点
 '''
+real_world_red = None
 while True:
     ret, frame = video_capture.read()
     if not ret:
